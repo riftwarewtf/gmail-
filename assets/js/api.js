@@ -46,11 +46,14 @@ function queueFor(base) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class ApiError extends Error {
-  constructor(message, { status = 0, code = 'error' } = {}) {
+  constructor(message, { status = 0, code = 'error', probeUrl = null } = {}) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    // For `network` failures: the URL to open directly, which bypasses CORS and
+    // shows what the server actually said.
+    this.probeUrl = probeUrl;
   }
 }
 
@@ -81,10 +84,14 @@ async function request(provider, path, { method = 'GET', body, token, raw = fals
         await sleep(400 * 2 ** n);
         return attempt(n + 1);
       }
-      throw new ApiError(
-        `Could not reach ${provider.label}. Check your connection, or switch provider.`,
-        { code: 'network' }
-      );
+      // A thrown fetch is indistinguishable from a CORS rejection, so this
+      // covers being offline, the host being blocked (DNS filters and content
+      // blockers list disposable-mail domains), and the provider's edge
+      // answering with a challenge page that carries no CORS headers.
+      throw new ApiError(`Could not reach ${provider.label}.`, {
+        code: 'network',
+        probeUrl: url,
+      });
     }
 
     if (res.status === 429 && n < retries) {

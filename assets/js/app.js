@@ -120,9 +120,19 @@ function setStatus(text, kind = '') {
   el.liveStatus.classList.toggle('is-error', kind === 'error');
 }
 
-function setHint(text, isError = false) {
+function setHint(text, isError = false, link = null) {
   el.generatorHint.textContent = text;
   el.generatorHint.classList.toggle('hint--error', isError);
+
+  if (link) {
+    el.generatorHint.appendChild(document.createTextNode(' '));
+    const a = document.createElement('a');
+    a.href = link.href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = link.label;
+    el.generatorHint.appendChild(a);
+  }
 }
 
 function describe(err) {
@@ -178,7 +188,7 @@ async function withToken(account, fn) {
 
 /* ---------------------------------------------------------------- domains */
 
-async function loadDomains() {
+async function loadDomains({ allowFailover = true } = {}) {
   const provider = activeProvider();
   el.domainSelect.innerHTML = '<option value="">loading…</option>';
   el.createBtn.disabled = true;
@@ -192,11 +202,42 @@ async function loadDomains() {
       .join('');
     el.createBtn.disabled = false;
     setHint('Addresses are real and receive real mail.');
+    return;
   } catch (err) {
     ui.domains = [];
     el.domainSelect.innerHTML = '<option value="">unavailable</option>';
     el.createBtn.disabled = true;
-    setHint(`${describe(err)} Try the other provider.`, true);
+
+    // An unreachable provider is worth one silent try on the other one before
+    // bothering the user about it.
+    if (allowFailover && err.code === 'network') {
+      const other = api.PROVIDERS.find((p) => p.id !== provider.id);
+      if (other) {
+        el.providerSelect.value = other.id;
+        notify.toast({
+          title: `${provider.label} unreachable`,
+          body: `Trying ${other.label} instead.`,
+          tone: 'warn',
+          timeout: 4000,
+        });
+        return loadDomains({ allowFailover: false });
+      }
+    }
+
+    if (err.code === 'network') {
+      // The browser will not say why a fetch failed, so point at the one check
+      // that distinguishes a blocker from the provider refusing the request.
+      setHint(
+        `Could not reach ${provider.label}, and the browser will not say why. ` +
+        'Most often a DNS or content blocker — disposable-mail domains are on ' +
+        'most blocklists — or the provider challenging your IP. Open this to ' +
+        'see what the server actually returns:',
+        true,
+        { href: err.probeUrl || `${provider.base}/domains`, label: `${provider.label}/domains ›` }
+      );
+    } else {
+      setHint(`${describe(err)} Try the other provider.`, true);
+    }
   }
 }
 

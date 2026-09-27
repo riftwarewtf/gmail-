@@ -196,6 +196,11 @@ body {
 
 .hint { margin: 2px 0 0; font-size: 11px; color: var(--fg-faint); line-height: 1.45; }
 .hint--error { color: var(--danger); }
+.hint a {
+  color: inherit; font-weight: 600;
+  text-decoration: underline; text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
 
 /* ------------------------------------------------------------------ buttons */
 

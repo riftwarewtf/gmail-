@@ -73,6 +73,19 @@ allowed to create a Pages site, so `enablement: true` cannot do it for you:
 The site then lands at **https://riftwarewtf.github.io/gmail-/** and every
 later push redeploys it automatically.
 
+## If it says a provider is unreachable
+
+A browser never tells a page *why* a `fetch` failed, so "could not reach" covers
+three different problems. If the selected provider fails, the app silently tries
+the other one; if both fail it shows a link straight to the provider's
+`/domains` endpoint. Open it — what you see there identifies the cause:
+
+| What the link shows | What it means |
+| --- | --- |
+| JSON (a list of domains) | The host is fine; the request was blocked in the page. Check for a content blocker or extension. |
+| Nothing loads / DNS error | A DNS or content blocker is eating the domain. Disposable-mail hosts are on most blocklists — common with AdGuard, NextDNS, Pi-hole, school and carrier filters. |
+| A Cloudflare challenge or "sorry" page | The provider is challenging your IP. Try another network — shared mobile IPs get this a lot. |
+
 ## Notes and limits
 
 - Mailboxes are disposable by design. Providers expire them on their own
@@ -87,7 +100,8 @@ later push redeploys it automatically.
 
 ## Testing
 
-The browser suite (Playwright) covers mailbox creation, persistence across
+`tests/e2e.js` covers mailbox creation, persistence across
 reloads, arrival notifications, the unread badge, HTML sanitisation and
 script-execution blocking, image blocking, attachments, theming and the mobile
-layout.
+layout. `tests/e2e-offline.js` covers provider failover and the
+unreachable-provider diagnostic.
