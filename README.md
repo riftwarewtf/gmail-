@@ -115,11 +115,17 @@ The browser suites run against mocked backends, which covers all the app's own
 logic. Against the live services:
 
 - **mail.tm / mail.gw** — request shapes follow their documented API.
-- **maildrop.cc / dropmail.me** — the GraphQL queries are written from their
-  published schemas but have **not** been exercised against the live
-  endpoints. If a field name is wrong the adapter fails its probe and the app
-  simply reports that backend as unreachable, so a bad guess degrades to one
-  fewer option rather than a broken page.
+- **maildrop.cc** — listing and delivery confirmed working against the live
+  service. The single-message query first returned `400`, so each GraphQL call
+  now tries a series of selections and uses the first the server accepts.
+- **dropmail.me** — written from its published schema, not exercised live.
+
+Arguments are inlined as GraphQL literals rather than declared variables, so a
+query cannot fail merely because the schema types an argument `ID!` where we
+guessed `String!`. Where a field is missing, the reader fills sender, subject
+and date from the inbox listing it already holds, and a body that cannot be
+fetched leaves the rest of the message on screen with the server's own error
+rather than replacing it.
 
 ## Notes and limits
 
@@ -140,3 +146,5 @@ reloads, arrival notifications, the unread badge, HTML sanitisation and
 script-execution blocking, image blocking, attachments, theming and the mobile
 layout. `tests/e2e-offline.js` covers provider failover and the
 unreachable-provider diagnostic across all four backends.
+`tests/e2e-maildrop.js` covers the GraphQL selection fallback and the
+body-failure path.

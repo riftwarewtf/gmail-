@@ -43,6 +43,35 @@ function firstLine(text, limit = 120) {
     .slice(0, limit);
 }
 
+/**
+ * Inline a value as a GraphQL string literal.
+ *
+ * Passing arguments as literals rather than declared variables means the query
+ * does not have to know whether the schema types an argument as String! or ID!
+ * — a mismatch there is a validation error, and we cannot test these schemas
+ * from here. JSON string escaping is a subset of GraphQL's, so this is safe.
+ */
+const lit = (value) => JSON.stringify(String(value));
+
+/**
+ * Try each query in turn, moving on only when the server rejects it as
+ * malformed. Field names differ between these schemas and a wrong guess is a
+ * 400, so the fallbacks trade one round trip for not breaking outright.
+ */
+async function graphqlFirstAccepted(url, queries, label) {
+  let lastError;
+  for (const query of queries) {
+    try {
+      return await graphql(url, query, {}, { label, retries: 1 });
+    } catch (err) {
+      const schemaRejection = err.status === 400 || err.code === 'graphql';
+      if (!schemaRejection) throw err;
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
 /** `hydra:member` on API Platform responses, a bare array on newer ones. */
 function members(payload) {
   if (Array.isArray(payload)) return payload;
@@ -198,8 +227,8 @@ const maildrop = {
   capabilities: { customName: true, serverSeen: false, deleteMessage: false, deleteMailbox: false, attachments: false },
 
   probe: () =>
-    graphql(MAILDROP_ENDPOINT, 'query Ping($mailbox:String!){inbox(mailbox:$mailbox){id}}',
-      { mailbox: 'ping' }, { retries: 0, label: 'maildrop.cc' }),
+    graphql(MAILDROP_ENDPOINT, `query{inbox(mailbox:${lit('ping')}){id}}`, {},
+      { retries: 0, label: 'maildrop.cc' }),
 
   domains: async () => ['maildrop.cc'],
 
@@ -209,11 +238,14 @@ const maildrop = {
   }),
 
   async messages(account) {
-    const data = await graphql(
+    const box = lit(account.creds.mailbox);
+    const data = await graphqlFirstAccepted(
       MAILDROP_ENDPOINT,
-      'query Inbox($mailbox:String!){inbox(mailbox:$mailbox){id headerfrom subject date}}',
-      { mailbox: account.creds.mailbox },
-      { label: 'maildrop.cc' }
+      [
+        `query{inbox(mailbox:${box}){id headerfrom subject date}}`,
+        `query{inbox(mailbox:${box}){id headerfrom date}}`,
+      ],
+      'maildrop.cc'
     );
 
     const inbox = (data && data.inbox) || [];
@@ -231,24 +263,37 @@ const maildrop = {
   },
 
   async message(account, save, id) {
-    const data = await graphql(
+    const box = lit(account.creds.mailbox);
+    const mid = lit(id);
+
+    // The body field is named differently across revisions of this schema, and
+    // the subject may only exist on the header type. Narrow down until one is
+    // accepted; the caller fills any gap from the inbox listing it already has.
+    const data = await graphqlFirstAccepted(
       MAILDROP_ENDPOINT,
-      'query Message($mailbox:String!,$id:String!){message(mailbox:$mailbox,id:$id){id headerfrom subject date body html}}',
-      { mailbox: account.creds.mailbox, id },
-      { label: 'maildrop.cc' }
+      [
+        `query{message(mailbox:${box},id:${mid}){id headerfrom subject date body html}}`,
+        `query{message(mailbox:${box},id:${mid}){id headerfrom headersubject date body html}}`,
+        `query{message(mailbox:${box},id:${mid}){id headerfrom date body html}}`,
+        `query{message(mailbox:${box},id:${mid}){id headerfrom date data html}}`,
+        `query{message(mailbox:${box},id:${mid}){id html}}`,
+      ],
+      'maildrop.cc'
     );
 
     const m = (data && data.message) || {};
+    const text = m.body || m.data || '';
+
     return {
       id: m.id || id,
       from: parseAddress(m.headerfrom),
-      subject: m.subject || '',
-      intro: firstLine(m.body),
+      subject: m.subject || m.headersubject || '',
+      intro: firstLine(text),
       seen: true,
       createdAt: m.date || new Date().toISOString(),
       hasAttachments: false,
       html: m.html || '',
-      text: m.body || '',
+      text,
       attachments: [],
     };
   },
@@ -316,11 +361,15 @@ const dropmail = {
   },
 
   async messages(account) {
-    const data = await graphql(
+    const sid = lit(account.creds.sessionId);
+    const data = await graphqlFirstAccepted(
       dropmailEndpoint(),
-      'query Session($id:ID!){session(id:$id){mails{id fromAddr headerSubject text receivedAt}}}',
-      { id: account.creds.sessionId },
-      { label: 'dropmail.me' }
+      [
+        `query{session(id:${sid}){mails{id fromAddr headerSubject text receivedAt}}}`,
+        `query{session(id:${sid}){mails{id fromAddr headerSubject text}}}`,
+        `query{session(id:${sid}){mails{id fromAddr text}}}`,
+      ],
+      'dropmail.me'
     );
 
     const mails = (data && data.session && data.session.mails) || [];
@@ -338,11 +387,15 @@ const dropmail = {
   },
 
   async message(account, save, id) {
-    const data = await graphql(
+    const sid = lit(account.creds.sessionId);
+    const data = await graphqlFirstAccepted(
       dropmailEndpoint(),
-      'query Session($id:ID!){session(id:$id){mails{id fromAddr headerSubject text html receivedAt}}}',
-      { id: account.creds.sessionId },
-      { label: 'dropmail.me' }
+      [
+        `query{session(id:${sid}){mails{id fromAddr headerSubject text html receivedAt}}}`,
+        `query{session(id:${sid}){mails{id fromAddr headerSubject text receivedAt}}}`,
+        `query{session(id:${sid}){mails{id fromAddr text}}}`,
+      ],
+      'dropmail.me'
     );
 
     const mails = (data && data.session && data.session.mails) || [];

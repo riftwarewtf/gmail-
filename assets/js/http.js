@@ -145,6 +145,9 @@ async function describeFailure(res, label) {
       payload.detail ||
       payload.message ||
       (payload.violations && payload.violations[0] && payload.violations[0].message) ||
+      // GraphQL servers answer validation errors with 400 and put the reason
+      // in the body; without this the status alone tells us nothing.
+      (Array.isArray(payload.errors) && payload.errors[0] && payload.errors[0].message) ||
       '';
   } catch {
     /* not JSON — fall through to a status-based message */

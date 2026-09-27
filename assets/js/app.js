@@ -688,27 +688,52 @@ async function openMessage(id) {
 
   renderMessages();
 
+  // The listing already carries sender, subject and date. Backends vary in
+  // which of those the single-message call returns, so treat the summary as
+  // the fallback for each field rather than letting the header go blank.
+  const summary = ui.messages.find((m) => m.id === id) || null;
+
   try {
-    const msg = await provider.message(account, saverFor(account), id);
+    const full = await provider.message(account, saverFor(account), id);
+    const msg = summary
+      ? {
+          ...full,
+          subject: full.subject || summary.subject || '',
+          from: full.from && full.from.address ? full.from : summary.from,
+          createdAt: full.createdAt || summary.createdAt,
+        }
+      : full;
+
     ui.openMessageFull = msg;
-
-    el.readerSubject.textContent = msg.subject || '(no subject)';
-    el.readerFrom.textContent = [senderLine(msg), new Date(msg.createdAt).toLocaleString()]
-      .filter(Boolean)
-      .join(' · ');
-
+    renderHeader(msg);
     renderAttachments(account, msg);
     renderBody(msg);
 
     await markRead(account, provider, id);
   } catch (err) {
-    el.readerSubject.textContent = 'Could not open message';
-    el.readerFrom.textContent = describe(err);
-    el.readerFrame.srcdoc = buildFrameDocument(
-      textToHtml(describe(err)),
-      document.documentElement.dataset.theme !== 'light'
-    );
+    const dark = document.documentElement.dataset.theme !== 'light';
+
+    if (summary) {
+      // Keep the message on screen with what we know; only the body is missing.
+      renderHeader(summary);
+      el.readerFrame.srcdoc = buildFrameDocument(
+        textToHtml(`This message's body could not be loaded.\n\n${describe(err)}`),
+        dark
+      );
+    } else {
+      el.readerSubject.textContent = 'Could not open message';
+      el.readerFrom.textContent = describe(err);
+      el.readerFrame.srcdoc = buildFrameDocument(textToHtml(describe(err)), dark);
+    }
+    el.readerFrame.onload = resizeFrame;
   }
+}
+
+function renderHeader(msg) {
+  el.readerSubject.textContent = msg.subject || '(no subject)';
+  el.readerFrom.textContent = [senderLine(msg), new Date(msg.createdAt).toLocaleString()]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /** Server-side where offered, local storage otherwise. */
