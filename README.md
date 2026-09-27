@@ -59,10 +59,19 @@ npx http-server -p 8123 .
 
 ## Deploying
 
-Pushing to `main` (or to the development branch) runs
-`.github/workflows/deploy.yml`, which publishes the repository root to GitHub
-Pages. It needs **Settings → Pages → Source: GitHub Actions** set once; after
-that every push redeploys.
+`.github/workflows/deploy.yml` publishes the repository root to GitHub Pages on
+every push to the default branch.
+
+Pages has to be switched on once by hand — a workflow's `GITHUB_TOKEN` is not
+allowed to create a Pages site, so `enablement: true` cannot do it for you:
+
+1. Open <https://github.com/riftwarewtf/gmail-/settings/pages>
+2. Under **Build and deployment → Source**, pick **GitHub Actions**
+3. Re-run the latest job at
+   <https://github.com/riftwarewtf/gmail-/actions> (or push anything)
+
+The site then lands at **https://riftwarewtf.github.io/gmail-/** and every
+later push redeploys it automatically.
 
 ## Notes and limits
 
