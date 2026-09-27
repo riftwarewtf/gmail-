@@ -424,6 +424,14 @@ body {
 
 .message__clip { font-size: 11px; color: var(--fg-faint); flex: 0 0 auto; margin-top: 4px; }
 
+.message__archived {
+  flex: 0 0 auto;
+  font-size: 10px; letter-spacing: .02em;
+  color: var(--fg-faint);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 1px 7px;
+}
+
 /* ------------------------------------------------------------- placeholder */
 
 .placeholder {

@@ -22,7 +22,7 @@
  * Adapters that refresh credentials call the `save` callback they are handed.
  */
 
-import { ApiError, request, postJson, graphql } from './http.js?v=7';
+import { ApiError, request, postJson, graphql } from './http.js?v=8';
 
 /* ------------------------------------------------------------------ helpers */
 

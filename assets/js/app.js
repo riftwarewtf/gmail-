@@ -5,11 +5,12 @@
  * knows which backend is serving it.
  */
 
-import * as providers from './providers.js?v=7';
-import { ApiError } from './http.js?v=7';
-import * as store from './store.js?v=7';
-import * as notify from './notify.js?v=7';
-import { sanitizeHtml, buildFrameDocument, textToHtml } from './sanitize.js?v=7';
+import * as providers from './providers.js?v=8';
+import { ApiError } from './http.js?v=8';
+import * as store from './store.js?v=8';
+import * as notify from './notify.js?v=8';
+import { sanitizeHtml, buildFrameDocument, textToHtml } from './sanitize.js?v=8';
+import * as archive from './archive.js?v=8';
 
 /* --------------------------------------------------------------- elements */
 
@@ -486,13 +487,18 @@ function applyLocalSeen(provider, account, messages) {
 async function pollAccount(account, { foreground = false } = {}) {
   const provider = providerFor(account);
   const raw = await provider.messages(account, saverFor(account));
-  const messages = applyLocalSeen(provider, account, raw);
+  const live = applyLocalSeen(provider, account, raw);
+
+  // Keep our own copy before the provider ages these out, then show anything
+  // it has already dropped alongside what it still has.
+  await archive.putMany(account.id, live);
+  const messages = await archive.merge(account.id, live);
 
   // `account` is the live store object, so read this before the update below.
   const wasPrimed = !!account.primed;
 
   const known = new Set(account.knownIds || []);
-  const fresh = messages.filter((m) => !known.has(m.id));
+  const fresh = live.filter((m) => !known.has(m.id));
 
   const allIds = messages.map((m) => m.id);
   // Keep a bounded tail so the store does not grow without limit.
@@ -588,7 +594,7 @@ async function pollCycle() {
 function renderMessages(freshIds = new Set(), force = false) {
   const previouslySelected = ui.openMessageId;
 
-  const signature = ui.messages.map((m) => `${m.id}|${m.seen ? 1 : 0}`).join(',') +
+  const signature = ui.messages.map((m) => `${m.id}|${m.seen ? 1 : 0}|${m.archived ? 1 : 0}`).join(',') +
     `#${previouslySelected || ''}`;
   if (!force && !freshIds.size && signature === ui.messageSignature) return;
   ui.messageSignature = signature;
@@ -635,6 +641,14 @@ function renderMessages(freshIds = new Set(), force = false) {
     subject.textContent = msg.subject || '(no subject)';
 
     main.append(top, subject);
+
+    if (msg.archived) {
+      const tag = document.createElement('span');
+      tag.className = 'message__archived';
+      tag.textContent = 'saved locally';
+      tag.title = 'The provider no longer has this message; it is served from this browser.';
+      top.appendChild(tag);
+    }
 
     if (msg.intro) {
       const intro = document.createElement('div');
@@ -694,7 +708,7 @@ async function openMessage(id) {
   const summary = ui.messages.find((m) => m.id === id) || null;
 
   try {
-    const full = await provider.message(account, saverFor(account), id);
+    const full = await fetchMessage(account, provider, id, summary);
     const msg = summary
       ? {
           ...full,
@@ -726,6 +740,28 @@ async function openMessage(id) {
       el.readerFrame.srcdoc = buildFrameDocument(textToHtml(describe(err)), dark);
     }
     el.readerFrame.onload = resizeFrame;
+  }
+}
+
+/**
+ * The provider first; the archive when it no longer has the message, or cannot
+ * return it. An archived body is exactly what the provider served originally.
+ */
+async function fetchMessage(account, provider, id, summary) {
+  if (summary && summary.archived) {
+    const stored = await archive.get(account.id, id, { requireFull: true });
+    if (stored) return stored;
+  }
+
+  try {
+    const full = await provider.message(account, saverFor(account), id);
+    await archive.put(account.id, { ...full, seen: true }, { full: true });
+    archive.prune(account.id);
+    return full;
+  } catch (err) {
+    const stored = await archive.get(account.id, id, { requireFull: true });
+    if (stored) return stored;
+    throw err;
   }
 }
 
@@ -863,6 +899,7 @@ async function deleteOpenMessage() {
 
   try {
     await provider.deleteMessage(account, saverFor(account), id);
+    await archive.remove(account.id, id);
     ui.messages = ui.messages.filter((m) => m.id !== id);
     closeReader();
     renderMessages(new Set(), true);
@@ -886,6 +923,7 @@ async function deleteActiveAccount() {
     // Providers expire mailboxes on their own; drop it locally regardless.
   }
 
+  await archive.clearMailbox(account.id);
   store.removeAccount(account.id);
   renderAccounts();
   const next = store.getActive();
@@ -944,12 +982,27 @@ async function writeClipboard(text) {
   }
 }
 
-function exportAccounts() {
-  if (!store.getAccounts().length) {
+async function exportAccounts() {
+  const accounts = store.getAccounts();
+  if (!accounts.length) {
     notify.toast({ title: 'Nothing to export', tone: 'warn', timeout: 2600 });
     return;
   }
-  const blob = new Blob([store.exportAccounts()], { type: 'application/json' });
+
+  // Include the archived mail, so a cleared browser is not the end of it.
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    mailboxes: JSON.parse(store.exportAccounts()),
+    archive: {},
+  };
+  let archived = 0;
+  for (const account of accounts) {
+    const rows = JSON.parse(await archive.exportMailbox(account.id));
+    payload.archive[account.address] = rows;
+    archived += rows.length;
+  }
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -958,6 +1011,13 @@ function exportAccounts() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+  notify.toast({
+    title: 'Exported',
+    body: `${accounts.length} mailbox${accounts.length === 1 ? '' : 'es'}, ${archived} saved message${archived === 1 ? '' : 's'}`,
+    tone: 'good',
+    timeout: 3500,
+  });
 }
 
 async function manualRefresh() {

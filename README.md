@@ -67,6 +67,30 @@ are swept every 20s.
 Addresses, passwords and session tokens live in `localStorage` on your own
 machine. Nothing is sent anywhere except the mail provider.
 
+## What "permanent" means here
+
+The **addresses** already are: `anything@maildrop.cc` works forever, and a
+mail.tm mailbox lives as long as you keep using it. What these services do not
+do is keep the **mail** — messages age out after a few days.
+
+So every message is copied into IndexedDB the first time it is seen, and served
+from there once the provider drops it. Such a message lists and opens exactly
+as before, tagged *saved locally*. The archive holds the newest 500 per
+mailbox, survives reloads, and **export** writes mailboxes and their saved mail
+to one JSON file, so clearing browser data is recoverable.
+
+Two things it does not fix, because no client can:
+
+- **Mail that arrives and expires while the app is closed** is gone before the
+  archive ever sees it. Retention at the provider still sets that window.
+- **maildrop inboxes are public** — the name is the only credential, so anyone
+  who guesses it reads the mail. mail.tm and mail.gw mailboxes are
+  password-protected; prefer those where they are reachable.
+
+Genuinely private permanent mail needs a domain you control — Cloudflare Email
+Routing into a Worker is the free way to do it, and would slot in as another
+adapter.
+
 ## Asset versioning
 
 Module URLs carry a `?v=` that matches the **build stamp in the footer**, so a
@@ -159,4 +183,5 @@ script-execution blocking, image blocking, attachments, theming and the mobile
 layout. `tests/e2e-offline.js` covers provider failover and the
 unreachable-provider diagnostic across all four backends.
 `tests/e2e-maildrop.js` covers the GraphQL selection fallback and the
-body-failure path.
+body-failure path. `tests/e2e-archive.js` covers local retention: a message
+outliving the provider deleting it, across a reload, without re-notifying.
