@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TempBox — Disposable Inbox Generator</title>
+<meta name="description" content="Generate throwaway email addresses that actually receive mail, with live notifications.">
+<meta name="color-scheme" content="dark light">
+<link rel="preconnect" href="https://api.mail.tm" crossorigin>
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true">
+      <rect x="6" y="14" width="52" height="36" rx="7" fill="currentColor"/>
+      <path d="M11 19 L32 36 L53 19" fill="none" stroke="var(--bg)" stroke-width="5" stroke-linejoin="round"/>
+    </svg>
+    <div class="brand__text">
+      <strong>TempBox</strong>
+      <span>disposable inbox generator</span>
+    </div>
+  </div>
+
+  <div class="topbar__actions">
+    <label class="field field--inline">
+      <span class="field__label">Provider</span>
+      <select id="provider-select" class="select select--sm"></select>
+    </label>
+
+    <button id="toggle-sound" class="icon-btn" type="button" aria-pressed="true" title="Notification sound">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/>
+        <path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"
+              fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <span class="sr-only">Toggle notification sound</span>
+    </button>
+
+    <button id="toggle-desktop" class="icon-btn" type="button" aria-pressed="false" title="Desktop notifications">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M6 10a6 6 0 0 1 12 0c0 4 1.5 5.5 1.5 5.5h-15S6 14 6 10z"
+              fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        <path d="M10 19a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <span class="sr-only">Toggle desktop notifications</span>
+    </button>
+
+    <button id="toggle-theme" class="icon-btn" type="button" title="Switch theme">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        <path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/>
+      </svg>
+      <span class="sr-only">Switch theme</span>
+    </button>
+  </div>
+</header>
+
+<main class="layout" id="layout">
+
+  <!-- ------------------------------------------------------------ sidebar -->
+  <aside class="sidebar">
+    <section class="panel">
+      <h2 class="panel__title">New mailbox</h2>
+
+      <div class="generator">
+        <div class="generator__row">
+          <input
+            id="username-input"
+            class="input"
+            type="text"
+            placeholder="username"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            aria-label="Mailbox username">
+          <button id="reroll-btn" class="btn btn--ghost btn--square" type="button" title="Roll a new name">⟳</button>
+        </div>
+
+        <div class="generator__row">
+          <select id="style-select" class="select" aria-label="Name style">
+            <option value="word">word pair</option>
+            <option value="human">person-like</option>
+            <option value="random">random string</option>
+          </select>
+          <select id="domain-select" class="select" aria-label="Domain">
+            <option value="">loading…</option>
+          </select>
+        </div>
+
+        <button id="create-btn" class="btn btn--primary btn--block" type="button">
+          <span class="btn__label">Generate mailbox</span>
+        </button>
+
+        <p class="hint" id="generator-hint">Addresses are real and receive real mail.</p>
+      </div>
+    </section>
+
+    <section class="panel panel--grow">
+      <div class="panel__head">
+        <h2 class="panel__title">Mailboxes <span id="account-count" class="count">0</span></h2>
+        <div class="panel__head-actions">
+          <button id="export-btn" class="link-btn" type="button" title="Download all addresses as JSON">export</button>
+        </div>
+      </div>
+      <ul id="account-list" class="account-list"></ul>
+      <p class="empty" id="account-empty">No mailboxes yet. Generate one above.</p>
+    </section>
+  </aside>
+
+  <!-- --------------------------------------------------------------- inbox -->
+  <section class="inbox" id="inbox-pane">
+    <div class="address-bar" id="address-bar" hidden>
+      <button id="back-btn" class="back-btn" type="button" aria-label="Back to mailboxes">‹</button>
+      <div class="address-bar__main">
+        <code id="active-address" class="address"></code>
+        <div class="address-bar__meta">
+          <span id="active-provider" class="tag"></span>
+          <span id="live-status" class="status">
+            <span class="status__dot"></span><span id="live-status-text">connecting…</span>
+          </span>
+        </div>
+      </div>
+      <div class="address-bar__actions">
+        <button id="copy-btn" class="btn btn--ghost" type="button">Copy</button>
+        <button id="refresh-btn" class="btn btn--ghost btn--square" type="button" title="Check now">⟳</button>
+        <button id="delete-account-btn" class="btn btn--danger-ghost btn--square" type="button" title="Delete this mailbox">🗑</button>
+      </div>
+    </div>
+
+    <div class="inbox__body">
+      <ul id="message-list" class="message-list"></ul>
+
+      <div class="placeholder" id="inbox-placeholder">
+        <svg viewBox="0 0 64 64" class="placeholder__art" aria-hidden="true">
+          <rect x="6" y="14" width="52" height="36" rx="7" fill="none" stroke="currentColor" stroke-width="3"/>
+          <path d="M9 18 L32 37 L55 18" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+        </svg>
+        <p class="placeholder__title">No mailbox selected</p>
+        <p class="placeholder__body">Generate one on the left, then send mail to the address. New messages land here within a few seconds.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------- reader -->
+  <section class="reader" id="reader" hidden>
+    <div class="reader__head">
+      <button id="reader-close" class="back-btn" type="button" aria-label="Close message">‹</button>
+      <div class="reader__headings">
+        <h2 id="reader-subject" class="reader__subject"></h2>
+        <p id="reader-from" class="reader__from"></p>
+      </div>
+      <div class="reader__actions">
+        <button id="reader-images" class="btn btn--ghost" type="button" hidden>Load images</button>
+        <button id="reader-delete" class="btn btn--danger-ghost btn--square" type="button" title="Delete message">🗑</button>
+      </div>
+    </div>
+
+    <div id="reader-attachments" class="attachments" hidden></div>
+
+    <div class="reader__frame-wrap">
+      <iframe
+        id="reader-frame"
+        class="reader__frame"
+        title="Message body"
+        sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        referrerpolicy="no-referrer"></iframe>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <span>Mail is fetched straight from the provider by your browser. Addresses and passwords stay in this browser's local storage.</span>
+  <span class="footer__sep">·</span>
+  <a href="https://github.com/riftwarewtf/gmail-" target="_blank" rel="noopener">source</a>
+</footer>
+
+<script type="module" src="assets/js/app.js"></script>
+</body>
+</html>
