@@ -22,7 +22,7 @@
  * Adapters that refresh credentials call the `save` callback they are handed.
  */
 
-import { ApiError, request, postJson, graphql } from './http.js';
+import { ApiError, request, postJson, graphql } from './http.js?v=7';
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -53,6 +53,8 @@ function firstLine(text, limit = 120) {
  */
 const lit = (value) => JSON.stringify(String(value));
 
+const isSchemaRejection = (err) => err.status === 400 || err.code === 'graphql';
+
 /**
  * Try each query in turn, moving on only when the server rejects it as
  * malformed. Field names differ between these schemas and a wrong guess is a
@@ -64,12 +66,94 @@ async function graphqlFirstAccepted(url, queries, label) {
     try {
       return await graphql(url, query, {}, { label, retries: 1 });
     } catch (err) {
-      const schemaRejection = err.status === 400 || err.code === 'graphql';
-      if (!schemaRejection) throw err;
+      if (!isSchemaRejection(err)) throw err;
       lastError = err;
     }
   }
   throw lastError;
+}
+
+/**
+ * Ask the server which fields a type actually has, and keep the ones we can
+ * use. Guessing at a schema we cannot inspect locally is what produced the
+ * 400s; introspection replaces the guess with an answer.
+ *
+ * @returns {Promise<string|null>} a selection set, or null if introspection is off
+ */
+async function introspectSelection(url, typeName, wanted, label) {
+  try {
+    const data = await graphql(
+      url,
+      `{__type(name:${lit(typeName)}){fields{name}}}`,
+      {},
+      { label, retries: 1 }
+    );
+    const available = new Set(
+      (((data || {}).__type || {}).fields || []).map((f) => f.name).filter(Boolean)
+    );
+    const usable = wanted.filter((name) => available.has(name));
+    return usable.length ? usable.join(' ') : null;
+  } catch {
+    return null; // introspection disabled, or the type is named something else
+  }
+}
+
+/** Names of the queries this endpoint exposes — for the error when all else fails. */
+async function introspectQueryNames(url, label) {
+  try {
+    const data = await graphql(url, '{__schema{queryType{fields{name}}}}', {}, { label, retries: 1 });
+    return ((((data || {}).__schema || {}).queryType || {}).fields || [])
+      .map((f) => f.name)
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Run a query whose selection set we are unsure of: try the known shapes, then
+ * fall back to introspection, then report what the server does offer.
+ *
+ * @param {(fields: string) => Promise<any>} run  builds and sends the query
+ */
+async function querySelectionLearning(run, { candidates, url, typeName, wanted, label, cache }) {
+  if (cache.selection) {
+    try {
+      return await run(cache.selection);
+    } catch (err) {
+      if (!isSchemaRejection(err)) throw err;
+      cache.selection = null; // the schema moved; relearn it
+    }
+  }
+
+  let lastError;
+  for (const fields of candidates) {
+    try {
+      const data = await run(fields);
+      cache.selection = fields;
+      return data;
+    } catch (err) {
+      if (!isSchemaRejection(err)) throw err;
+      lastError = err;
+    }
+  }
+
+  const discovered = await introspectSelection(url, typeName, wanted, label);
+  if (discovered) {
+    const data = await run(discovered);
+    cache.selection = discovered;
+    return data;
+  }
+
+  // Nothing worked and we cannot see the schema — say what the server does have,
+  // so the next attempt is informed rather than another guess.
+  const names = await introspectQueryNames(url, label);
+  throw new ApiError(
+    `${label} rejected every query shape we know.` +
+      (names.length ? ` It offers: ${names.join(', ')}.` : '') +
+      (lastError ? ` Last error: ${lastError.message}` : ''),
+    { code: 'graphql', probeUrl: url }
+  );
 }
 
 /** `hydra:member` on API Platform responses, a bare array on newer ones. */
@@ -219,6 +303,10 @@ function makeMailTmAdapter({ id, label, base }) {
  */
 const MAILDROP_ENDPOINT = 'https://api.maildrop.cc/graphql';
 
+/** Selection sets learned at runtime, so the cost is paid once per load. */
+const maildropMessageShape = { selection: null };
+const dropmailMailShape = { selection: null };
+
 const maildrop = {
   id: 'maildrop',
   label: 'maildrop.cc',
@@ -267,18 +355,27 @@ const maildrop = {
     const mid = lit(id);
 
     // The body field is named differently across revisions of this schema, and
-    // the subject may only exist on the header type. Narrow down until one is
-    // accepted; the caller fills any gap from the inbox listing it already has.
-    const data = await graphqlFirstAccepted(
-      MAILDROP_ENDPOINT,
-      [
-        `query{message(mailbox:${box},id:${mid}){id headerfrom subject date body html}}`,
-        `query{message(mailbox:${box},id:${mid}){id headerfrom headersubject date body html}}`,
-        `query{message(mailbox:${box},id:${mid}){id headerfrom date body html}}`,
-        `query{message(mailbox:${box},id:${mid}){id headerfrom date data html}}`,
-        `query{message(mailbox:${box},id:${mid}){id html}}`,
-      ],
-      'maildrop.cc'
+    // the subject may only exist on the header type. Try the known shapes, then
+    // ask the server what Message really has. The caller fills any remaining
+    // gap from the inbox listing it already holds.
+    const data = await querySelectionLearning(
+      (fields) =>
+        graphql(MAILDROP_ENDPOINT, `query{message(mailbox:${box},id:${mid}){${fields}}}`, {},
+          { label: 'maildrop.cc', retries: 1 }),
+      {
+        candidates: [
+          'id headerfrom subject date body html',
+          'id headerfrom headersubject date body html',
+          'id headerfrom date body html',
+          'id headerfrom date data html',
+          'id html',
+        ],
+        url: MAILDROP_ENDPOINT,
+        typeName: 'Message',
+        wanted: ['id', 'headerfrom', 'subject', 'headersubject', 'date', 'body', 'data', 'text', 'html'],
+        label: 'maildrop.cc',
+        cache: maildropMessageShape,
+      }
     );
 
     const m = (data && data.message) || {};
@@ -388,14 +485,22 @@ const dropmail = {
 
   async message(account, save, id) {
     const sid = lit(account.creds.sessionId);
-    const data = await graphqlFirstAccepted(
-      dropmailEndpoint(),
-      [
-        `query{session(id:${sid}){mails{id fromAddr headerSubject text html receivedAt}}}`,
-        `query{session(id:${sid}){mails{id fromAddr headerSubject text receivedAt}}}`,
-        `query{session(id:${sid}){mails{id fromAddr text}}}`,
-      ],
-      'dropmail.me'
+    const data = await querySelectionLearning(
+      (fields) =>
+        graphql(dropmailEndpoint(), `query{session(id:${sid}){mails{${fields}}}}`, {},
+          { label: 'dropmail.me', retries: 1 }),
+      {
+        candidates: [
+          'id fromAddr headerSubject text html receivedAt',
+          'id fromAddr headerSubject text receivedAt',
+          'id fromAddr text',
+        ],
+        url: dropmailEndpoint(),
+        typeName: 'Mail',
+        wanted: ['id', 'fromAddr', 'headerSubject', 'text', 'html', 'receivedAt'],
+        label: 'dropmail.me',
+        cache: dropmailMailShape,
+      }
     );
 
     const mails = (data && data.session && data.session.mails) || [];

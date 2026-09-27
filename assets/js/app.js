@@ -5,11 +5,11 @@
  * knows which backend is serving it.
  */
 
-import * as providers from './providers.js';
-import { ApiError } from './http.js';
-import * as store from './store.js';
-import * as notify from './notify.js';
-import { sanitizeHtml, buildFrameDocument, textToHtml } from './sanitize.js';
+import * as providers from './providers.js?v=7';
+import { ApiError } from './http.js?v=7';
+import * as store from './store.js?v=7';
+import * as notify from './notify.js?v=7';
+import { sanitizeHtml, buildFrameDocument, textToHtml } from './sanitize.js?v=7';
 
 /* --------------------------------------------------------------- elements */
 

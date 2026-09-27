@@ -67,6 +67,15 @@ are swept every 20s.
 Addresses, passwords and session tokens live in `localStorage` on your own
 machine. Nothing is sent anywhere except the mail provider.
 
+## Asset versioning
+
+Module URLs carry a `?v=` that matches the **build stamp in the footer**, so a
+browser cannot pin the page to a half-old deploy — one stale module would
+otherwise hold every import it pulls in. Bump the number in `index.html` and in
+the `import` lines of `app.js` and `providers.js` together when shipping a
+change that must not be served from cache. The footer stamp tells you at a
+glance which deploy a device is actually running.
+
 ## Running it locally
 
 Any static server will do — ES modules need `http://`, not `file://`:
@@ -116,8 +125,11 @@ logic. Against the live services:
 
 - **mail.tm / mail.gw** — request shapes follow their documented API.
 - **maildrop.cc** — listing and delivery confirmed working against the live
-  service. The single-message query first returned `400`, so each GraphQL call
-  now tries a series of selections and uses the first the server accepts.
+  service. The single-message query returns `400`. Rather than keep guessing at
+  a schema that cannot be inspected from a development machine, each GraphQL
+  call tries the known selections and then **introspects the type** and builds
+  the query from the fields the server reports. The learned shape is cached for
+  the rest of the page's life, so the cost is one extra round trip, once.
 - **dropmail.me** — written from its published schema, not exercised live.
 
 Arguments are inlined as GraphQL literals rather than declared variables, so a

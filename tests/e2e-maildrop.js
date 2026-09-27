@@ -28,7 +28,7 @@ const HEADER = {
    * @param acceptMessage which `message{...}` selection the fake server accepts;
    *        null rejects every one of them.
    */
-  async function run(acceptMessage) {
+  async function run(acceptMessage, introspects = false) {
     const ctx = await browser.newContext();
     const seen = [];
     for (const host of DEAD) await ctx.route(`**://${host}/**`, (r) => r.abort('connectionfailed'));
@@ -42,11 +42,26 @@ const HEADER = {
         return json({ data: { inbox: /mailbox:"ping"/.test(query) ? [] : [HEADER] } });
       }
 
+      if (/__type|__schema/.test(query)) {
+        seen.push(query);
+        if (introspects) {
+          if (/__schema/.test(query)) {
+            return json({ data: { __schema: { queryType: { fields:
+              [{ name: 'inbox' }, { name: 'message' }, { name: 'ping' }] } } } });
+          }
+          // The real shape, which none of the hardcoded guesses match.
+          return json({ data: { __type: { fields:
+            [{ name: 'id' }, { name: 'headerfrom' }, { name: 'text' }] } } });
+        }
+        return json({ errors: [{ message: 'introspection is disabled' }] }, 400);
+      }
+
       if (/message\(/.test(query)) {
         seen.push(query);
         if (acceptMessage && query.includes(acceptMessage)) {
           return json({ data: { message: { id: 'm-1', headerfrom: HEADER.headerfrom,
-            date: HEADER.date, body: 'hello from the body', html: '<p>hello from the body</p>' } } });
+            date: HEADER.date, body: 'hello from the body', text: 'hello from the body',
+            html: '<p>hello from the body</p>' } } });
         }
         // How a GraphQL server actually rejects an unknown field.
         return json({ errors: [{ message: `Cannot query field "nope" on type "Message".` }] }, 400);
@@ -91,6 +106,24 @@ const HEADER = {
     check('explains that only the body failed', /body could not be loaded/i.test(frame));
     check('surfaces the server\'s actual GraphQL error, not just "400"',
       /Cannot query field/.test(frame), frame.slice(0, 120));
+    await ctx.close();
+  }
+
+  // --- no hardcoded shape matches, but introspection reveals the real one ---
+  {
+    const { ctx, page, seen } = await run('id headerfrom text', true);
+    check('introspects after the guesses fail',
+      seen.some((q) => /__type/.test(q)), `${seen.length} attempts`);
+    check('body renders from the introspected shape',
+      /hello from the body/.test(await page.frameLocator('#reader-frame').locator('body').innerHTML()));
+    await ctx.close();
+  }
+
+  // --- nothing works and introspection is off: report what the server offers ---
+  {
+    const { ctx, page } = await run(null, false);
+    const frame = await page.frameLocator('#reader-frame').locator('body').innerHTML();
+    check('names the rejection plainly', /rejected every query shape/i.test(frame), frame.slice(0, 90));
     await ctx.close();
   }
 
