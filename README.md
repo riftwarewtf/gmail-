@@ -25,23 +25,42 @@ straight to a public disposable-mail provider from your browser.
 
 ## How it works
 
-`mail.tm` and `mail.gw` expose the same public API, so the client speaks to
-either and you can switch provider if one is rate-limited or down.
+Four backends sit behind one adapter interface, so the UI never knows which
+one is serving it. **Auto** probes all of them at once on load and uses the
+first that answers; the picker marks the ones that did not.
+
+| Backend | Accounts | Custom names | Read state | Delete | Attachments |
+| --- | --- | --- | --- | --- | --- |
+| mail.tm | yes | yes | server | yes | yes |
+| mail.gw | yes | yes | server | yes | yes |
+| maildrop.cc | none | yes | local | no | no |
+| dropmail.me | session | provider-assigned | local | no | no |
+
+mail.tm and mail.gw run the same codebase, so one adapter covers both. maildrop
+has no accounts at all — a mailbox name is already live, which also means
+anyone using the same name sees the same inbox. dropmail issues a session and
+picks the address itself.
+
+Capabilities are declared per adapter and the UI follows them: the name field
+disables itself for a backend that assigns addresses, the delete button hides
+where deletion is not offered, and read state falls back to localStorage where
+the API carries none.
 
 ```
 index.html
 assets/css/style.css
 assets/js/
-  api.js        provider layer — request queue, 429 backoff, token refresh
+  http.js       shared transport — request queue, 429 backoff, error shaping
+  providers.js  one adapter per backend + the reachability probe
   store.js      localStorage persistence + address/password generation
   notify.js     toasts, desktop notifications, chime, favicon badge
   sanitize.js   HTML mail scrubbing and remote-image blocking
   app.js        UI wiring and the polling loop
 ```
 
-Both providers cap you at roughly 8 requests/second, so every call is
-serialised through a queue with a minimum gap and retries on `429` honouring
-`Retry-After`. The active mailbox is polled every 3.5s while the tab is
+mail.tm and mail.gw cap you at roughly 8 requests/second, so every call is
+serialised per host through a queue with a minimum gap and retries on `429`
+honouring `Retry-After`. The active mailbox is polled every 3.5s while the tab is
 visible, 12s when hidden, with exponential backoff on failure; other mailboxes
 are swept every 20s.
 
@@ -73,18 +92,34 @@ allowed to create a Pages site, so `enablement: true` cannot do it for you:
 The site then lands at **https://riftwarewtf.github.io/gmail-/** and every
 later push redeploys it automatically.
 
-## If it says a provider is unreachable
+## If it says no provider answered
 
 A browser never tells a page *why* a `fetch` failed, so "could not reach" covers
-three different problems. If the selected provider fails, the app silently tries
-the other one; if both fail it shows a link straight to the provider's
-`/domains` endpoint. Open it — what you see there identifies the cause:
+three different problems. The app probes every backend before concluding
+anything, and shows a link straight to one of their endpoints. Open it — what
+you see there identifies the cause:
 
 | What the link shows | What it means |
 | --- | --- |
 | JSON (a list of domains) | The host is fine; the request was blocked in the page. Check for a content blocker or extension. |
 | Nothing loads / DNS error | A DNS or content blocker is eating the domain. Disposable-mail hosts are on most blocklists — common with AdGuard, NextDNS, Pi-hole, school and carrier filters. |
 | A Cloudflare challenge or "sorry" page | The provider is challenging your IP. Try another network — shared mobile IPs get this a lot. |
+
+All four backends failing at once points at the second row rather than the
+provider: they are all well-known disposable-mail hosts, so one blocklist takes
+out every one of them together.
+
+## Verification status
+
+The browser suites run against mocked backends, which covers all the app's own
+logic. Against the live services:
+
+- **mail.tm / mail.gw** — request shapes follow their documented API.
+- **maildrop.cc / dropmail.me** — the GraphQL queries are written from their
+  published schemas but have **not** been exercised against the live
+  endpoints. If a field name is wrong the adapter fails its probe and the app
+  simply reports that backend as unreachable, so a bad guess degrades to one
+  fewer option rather than a broken page.
 
 ## Notes and limits
 
@@ -100,8 +135,8 @@ the other one; if both fail it shows a link straight to the provider's
 
 ## Testing
 
-`tests/e2e.js` covers mailbox creation, persistence across
+`tests/e2e.js` (40 checks) covers mailbox creation, persistence across
 reloads, arrival notifications, the unread badge, HTML sanitisation and
 script-execution blocking, image blocking, attachments, theming and the mobile
 layout. `tests/e2e-offline.js` covers provider failover and the
-unreachable-provider diagnostic.
+unreachable-provider diagnostic across all four backends.

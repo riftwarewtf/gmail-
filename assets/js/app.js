@@ -1,8 +1,12 @@
 /*
  * app.js — wiring: generator, inbox polling, reader, notifications.
+ *
+ * The UI talks only to the adapter interface in providers.js, so it never
+ * knows which backend is serving it.
  */
 
-import * as api from './api.js';
+import * as providers from './providers.js';
+import { ApiError } from './http.js';
 import * as store from './store.js';
 import * as notify from './notify.js';
 import { sanitizeHtml, buildFrameDocument, textToHtml } from './sanitize.js';
@@ -56,29 +60,39 @@ const el = {
 /* ------------------------------------------------------------------ state */
 
 const ui = {
-  messages: [],          // messages of the active mailbox, newest first
+  messages: [],
   openMessageId: null,
   openMessageFull: null,
-  imagesForOpen: false,  // per-message override of the global image setting
+  imagesForOpen: false,
   domains: [],
   pollTimer: null,
   pollFailures: 0,
   lastBackgroundSweep: 0,
   busy: false,
-  accountSignature: null,  // guards against redundant sidebar re-renders
-  messageSignature: null,  // ditto for the message list
+  accountSignature: null,
+  messageSignature: null,
+  autoProvider: null,   // what "Auto" resolved to
+  reachability: null,   // last probeAll() result
 };
 
 const THEME_KEY = 'tempbox.theme';
+const PROVIDER_KEY = 'tempbox.provider';
 
-/* ------------------------------------------------------------------ helpers */
+/* ----------------------------------------------------------------- helpers */
 
 function activeProvider() {
-  return api.providerById(el.providerSelect.value);
+  const value = el.providerSelect.value;
+  if (value === 'auto') return ui.autoProvider || providers.PROVIDERS[0];
+  return providers.providerById(value);
 }
 
 function providerFor(account) {
-  return api.providerById(account.provider);
+  return providers.providerById(account.provider);
+}
+
+/** Adapters call this to persist refreshed credentials. */
+function saverFor(account) {
+  return (creds) => store.updateAccount(account.id, { creds });
 }
 
 function relativeTime(iso) {
@@ -136,9 +150,7 @@ function setHint(text, isError = false, link = null) {
 }
 
 function describe(err) {
-  return err instanceof api.ApiError || err instanceof Error
-    ? err.message
-    : 'Something went wrong.';
+  return err instanceof Error ? err.message : 'Something went wrong.';
 }
 
 /* ------------------------------------------------------------------- theme */
@@ -160,30 +172,50 @@ function initTheme() {
   applyTheme(saved);
 }
 
-/* ------------------------------------------------------------ auth plumbing */
+/* -------------------------------------------------------------- provider UI */
 
-/** Returns a usable token for the mailbox, re-authenticating if the old one died. */
-async function tokenFor(account) {
-  if (account.token) return account.token;
-  const provider = providerFor(account);
-  const session = await api.getToken(provider, account.address, account.password);
-  store.updateAccount(account.id, { token: session.token, accountId: session.id || account.accountId });
-  return session.token;
+function renderProviderOptions() {
+  const reach = ui.reachability;
+  const suffix = (id) => {
+    if (!reach) return '';
+    const row = reach.find((r) => r.provider.id === id);
+    if (!row) return '';
+    return row.ok ? '' : ' — no answer';
+  };
+
+  const chosen = el.providerSelect.value || 'auto';
+  el.providerSelect.innerHTML =
+    `<option value="auto">Auto${ui.autoProvider ? ` (${ui.autoProvider.label})` : ''}</option>` +
+    providers.PROVIDERS.map((p) => `<option value="${p.id}">${p.label}${suffix(p.id)}</option>`).join('');
+  el.providerSelect.value = chosen;
 }
 
-/** Runs `fn(token)`, refreshing the token once if the provider says it expired. */
-async function withToken(account, fn) {
-  let token = await tokenFor(account);
-  try {
-    return await fn(token);
-  } catch (err) {
-    if (err instanceof api.ApiError && err.status === 401) {
-      store.updateAccount(account.id, { token: null });
-      token = await tokenFor(account);
-      return fn(token);
-    }
-    throw err;
-  }
+/** Ask every backend at once which ones this device can actually reach. */
+async function probeProviders() {
+  setHint('Checking which providers this device can reach…');
+  ui.reachability = await providers.probeAll();
+
+  const reachable = ui.reachability.filter((r) => r.ok).map((r) => r.provider);
+  ui.autoProvider = reachable[0] || null;
+  renderProviderOptions();
+  return reachable;
+}
+
+/** The message shown when nothing at all answers. */
+function reportAllUnreachable() {
+  const probeUrl =
+    (ui.reachability || [])
+      .map((r) => r.error && r.error.probeUrl)
+      .find(Boolean) || 'https://api.mail.tm/domains?page=1';
+
+  setHint(
+    'None of the providers answered, and the browser will not say why. All of ' +
+    'them are disposable-mail hosts, so a single DNS or content blocker takes ' +
+    'out every one at once — that or the network is blocking them. Open this ' +
+    'to see what actually comes back:',
+    true,
+    { href: probeUrl, label: 'test a provider directly ›' }
+  );
 }
 
 /* ---------------------------------------------------------------- domains */
@@ -194,50 +226,65 @@ async function loadDomains({ allowFailover = true } = {}) {
   el.createBtn.disabled = true;
 
   try {
-    const domains = await api.getDomains(provider);
-    if (!domains.length) throw new api.ApiError('No domains are available right now.');
+    const domains = await provider.domains();
     ui.domains = domains;
-    el.domainSelect.innerHTML = domains
-      .map((d) => `<option value="${d}">@${d}</option>`)
-      .join('');
+    el.domainSelect.innerHTML = domains.map((d) => `<option value="${d}">@${d}</option>`).join('');
     el.createBtn.disabled = false;
-    setHint('Addresses are real and receive real mail.');
-    return;
+    applyCapabilities(provider);
+    return true;
   } catch (err) {
     ui.domains = [];
     el.domainSelect.innerHTML = '<option value="">unavailable</option>';
     el.createBtn.disabled = true;
 
-    // An unreachable provider is worth one silent try on the other one before
-    // bothering the user about it.
+    // One unreachable backend is not a verdict — ask all of them before saying so.
     if (allowFailover && err.code === 'network') {
-      const other = api.PROVIDERS.find((p) => p.id !== provider.id);
-      if (other) {
-        el.providerSelect.value = other.id;
+      const reachable = await probeProviders();
+      if (reachable.length) {
+        el.providerSelect.value = 'auto';
         notify.toast({
           title: `${provider.label} unreachable`,
-          body: `Trying ${other.label} instead.`,
+          body: `Using ${reachable[0].label} instead.`,
           tone: 'warn',
-          timeout: 4000,
+          timeout: 4500,
         });
         return loadDomains({ allowFailover: false });
       }
+      reportAllUnreachable();
+      return false;
     }
 
     if (err.code === 'network') {
-      // The browser will not say why a fetch failed, so point at the one check
-      // that distinguishes a blocker from the provider refusing the request.
-      setHint(
-        `Could not reach ${provider.label}, and the browser will not say why. ` +
-        'Most often a DNS or content blocker — disposable-mail domains are on ' +
-        'most blocklists — or the provider challenging your IP. Open this to ' +
-        'see what the server actually returns:',
-        true,
-        { href: err.probeUrl || `${provider.base}/domains`, label: `${provider.label}/domains ›` }
-      );
+      reportAllUnreachable();
     } else {
-      setHint(`${describe(err)} Try the other provider.`, true);
+      setHint(`${describe(err)} Try another provider.`, true);
     }
+    return false;
+  }
+}
+
+/** Some backends assign the address themselves or cannot delete. Reflect that. */
+function applyCapabilities(provider) {
+  const caps = provider.capabilities;
+
+  el.usernameInput.disabled = !caps.customName;
+  el.rerollBtn.disabled = !caps.customName;
+  el.styleSelect.disabled = !caps.customName;
+
+  if (!caps.customName) {
+    el.usernameInput.value = '';
+    el.usernameInput.placeholder = 'assigned by provider';
+    setHint(`${provider.label} assigns the address itself.`);
+  } else {
+    el.usernameInput.placeholder = 'username';
+    if (!el.usernameInput.value) {
+      el.usernameInput.value = store.generateUsername(el.styleSelect.value);
+    }
+    setHint(
+      caps.serverSeen
+        ? 'Addresses are real and receive real mail.'
+        : `Addresses are real. ${provider.label} has no accounts — anyone using the same name sees the same inbox.`
+    );
   }
 }
 
@@ -246,14 +293,16 @@ async function loadDomains({ allowFailover = true } = {}) {
 async function createMailbox() {
   if (ui.busy) return;
   const provider = activeProvider();
+  const caps = provider.capabilities;
   const domain = el.domainSelect.value;
+
   if (!domain) {
-    setHint('No domain available — switch provider and try again.', true);
+    setHint('No domain available — pick another provider and try again.', true);
     return;
   }
 
   const typed = store.normalizeUsername(el.usernameInput.value);
-  const custom = typed.length >= 3;
+  const custom = caps.customName && typed.length >= 3;
   let username = custom ? typed : store.generateUsername(el.styleSelect.value);
 
   ui.busy = true;
@@ -263,45 +312,44 @@ async function createMailbox() {
 
   try {
     let created = null;
-    // A generated name that collides is worth one silent retry; a typed one is not.
+    // A generated name that collides is worth a silent retry; a typed one is not.
     for (let attempt = 0; attempt < (custom ? 1 : 3); attempt += 1) {
-      const address = `${username}@${domain}`;
-      const password = store.generatePassword();
       try {
-        const account = await api.createAccount(provider, address, password);
-        const session = await api.getToken(provider, address, password);
+        const made = await provider.createMailbox({
+          username,
+          domain,
+          password: store.generatePassword(),
+        });
         created = {
-          id: `${provider.id}:${address}`,
-          accountId: (account && account.id) || session.id || null,
-          address,
-          password,
+          id: `${provider.id}:${made.address}`,
           provider: provider.id,
-          token: session.token,
+          address: made.address,
+          creds: made.creds,
           createdAt: new Date().toISOString(),
           unread: 0,
           knownIds: [],
+          seenIds: [],
           primed: false,
         };
         break;
       } catch (err) {
-        const collision = err instanceof api.ApiError && (err.status === 422 || err.status === 400);
+        const collision = err instanceof ApiError && (err.status === 422 || err.status === 400);
         if (!collision || custom || attempt === 2) throw err;
         username = store.generateUsername(el.styleSelect.value);
       }
     }
 
-    if (!created) throw new api.ApiError('Could not find a free address. Try again.');
+    if (!created) throw new ApiError('Could not find a free address. Try again.');
 
     if (store.getAccounts().some((a) => a.id === created.id)) {
       setHint('That mailbox is already in your list.', true);
       store.setActive(created.id);
     } else {
       store.addAccount(created);
-      setHint('Mailbox ready — send something to it.');
       notify.toast({ title: 'Mailbox created', body: created.address, tone: 'good' });
     }
 
-    el.usernameInput.value = '';
+    if (caps.customName) el.usernameInput.value = '';
     renderAccounts();
     await selectAccount(store.getActive().id);
   } catch (err) {
@@ -348,7 +396,7 @@ function renderAccounts(force = false) {
 
     const meta = document.createElement('span');
     meta.className = 'account__meta';
-    meta.textContent = `${api.providerById(account.provider).label} · ${relativeTime(account.createdAt)}`;
+    meta.textContent = `${providerFor(account).label} · ${relativeTime(account.createdAt)}`;
 
     main.append(address, meta);
 
@@ -397,9 +445,10 @@ async function selectAccount(id) {
     return;
   }
 
+  const provider = providerFor(account);
   el.addressBar.hidden = false;
   el.activeAddress.textContent = account.address;
-  el.activeProvider.textContent = api.providerById(account.provider).label;
+  el.activeProvider.textContent = provider.label;
   el.inboxPlaceholder.hidden = false;
   el.inboxPlaceholder.querySelector('.placeholder__title').textContent = 'Waiting for mail';
   el.inboxPlaceholder.querySelector('.placeholder__body').textContent =
@@ -413,9 +462,8 @@ async function selectAccount(id) {
     await pollAccount(account, { foreground: true });
     ui.pollFailures = 0;
     setStatus('live', 'live');
-  } catch (err) {
-    // The polling loop below will keep retrying; just say so rather than
-    // failing the whole selection.
+  } catch {
+    // The polling loop keeps retrying; do not fail the whole selection.
     setStatus('retrying…', 'error');
   }
 
@@ -424,13 +472,21 @@ async function selectAccount(id) {
 
 /* ----------------------------------------------------------------- polling */
 
+/** Backends without server-side read state get it applied from local storage. */
+function applyLocalSeen(provider, account, messages) {
+  if (provider.capabilities.serverSeen) return messages;
+  const seen = new Set(account.seenIds || []);
+  return messages.map((m) => ({ ...m, seen: seen.has(m.id) }));
+}
+
 /**
- * Fetch one mailbox. Returns the messages that are genuinely new since the
- * last sweep, so the caller can decide whether to make noise about them.
+ * Fetch one mailbox. Returns the messages that are genuinely new since the last
+ * sweep, so the caller can decide whether to make noise about them.
  */
 async function pollAccount(account, { foreground = false } = {}) {
   const provider = providerFor(account);
-  const messages = await withToken(account, (token) => api.listMessages(provider, token, 1));
+  const raw = await provider.messages(account, saverFor(account));
+  const messages = applyLocalSeen(provider, account, raw);
 
   // `account` is the live store object, so read this before the update below.
   const wasPrimed = !!account.primed;
@@ -465,12 +521,8 @@ function announce(account, fresh) {
   if (settings.sound) notify.chime();
 
   const first = fresh[0];
-  const title = fresh.length === 1
-    ? `New mail — ${senderName(first)}`
-    : `${fresh.length} new messages`;
-  const body = fresh.length === 1
-    ? (first.subject || '(no subject)')
-    : account.address;
+  const title = fresh.length === 1 ? `New mail — ${senderName(first)}` : `${fresh.length} new messages`;
+  const body = fresh.length === 1 ? (first.subject || '(no subject)') : account.address;
 
   const open = async () => {
     if (!isActive) await selectAccount(account.id);
@@ -485,9 +537,7 @@ function announce(account, fresh) {
 }
 
 function pollDelay() {
-  if (ui.pollFailures > 0) {
-    return Math.min(4000 * 2 ** ui.pollFailures, 60000);
-  }
+  if (ui.pollFailures > 0) return Math.min(4000 * 2 ** ui.pollFailures, 60000);
   return document.hidden ? 12000 : 3500;
 }
 
@@ -533,14 +583,13 @@ async function pollCycle() {
   restartPolling();
 }
 
-/* ---------------------------------------------------------- message list */
+/* ----------------------------------------------------------- message list */
 
 function renderMessages(freshIds = new Set(), force = false) {
   const previouslySelected = ui.openMessageId;
 
-  const signature = ui.messages
-    .map((m) => `${m.id}|${m.seen ? 1 : 0}`)
-    .join(',') + `#${previouslySelected || ''}`;
+  const signature = ui.messages.map((m) => `${m.id}|${m.seen ? 1 : 0}`).join(',') +
+    `#${previouslySelected || ''}`;
   if (!force && !freshIds.size && signature === ui.messageSignature) return;
   ui.messageSignature = signature;
 
@@ -622,6 +671,7 @@ function renderMessages(freshIds = new Set(), force = false) {
 async function openMessage(id) {
   const account = store.getActive();
   if (!account) return;
+  const provider = providerFor(account);
 
   ui.openMessageId = id;
   ui.imagesForOpen = store.getSettings().images;
@@ -633,38 +683,24 @@ async function openMessage(id) {
   el.readerAttachments.hidden = true;
   el.readerAttachments.innerHTML = '';
   el.readerImages.hidden = true;
+  el.readerDelete.hidden = !provider.capabilities.deleteMessage;
   el.readerFrame.removeAttribute('srcdoc');
 
   renderMessages();
 
   try {
-    const provider = providerFor(account);
-    const msg = await withToken(account, (token) => api.getMessage(provider, token, id));
+    const msg = await provider.message(account, saverFor(account), id);
     ui.openMessageFull = msg;
 
     el.readerSubject.textContent = msg.subject || '(no subject)';
-    el.readerFrom.textContent = [
-      senderLine(msg),
-      new Date(msg.createdAt).toLocaleString(),
-    ].filter(Boolean).join(' · ');
+    el.readerFrom.textContent = [senderLine(msg), new Date(msg.createdAt).toLocaleString()]
+      .filter(Boolean)
+      .join(' · ');
 
     renderAttachments(account, msg);
     renderBody(msg);
 
-    if (!msg.seen) {
-      try {
-        await withToken(account, (token) => api.markSeen(provider, token, id, true));
-        const local = ui.messages.find((m) => m.id === id);
-        if (local) local.seen = true;
-        store.updateAccount(account.id, {
-          unread: Math.max(0, (account.unread || 0) - 1),
-        });
-        renderMessages();
-        renderAccounts();
-      } catch {
-        /* Marking read is cosmetic; the body is already on screen. */
-      }
-    }
+    await markRead(account, provider, id);
   } catch (err) {
     el.readerSubject.textContent = 'Could not open message';
     el.readerFrom.textContent = describe(err);
@@ -672,6 +708,28 @@ async function openMessage(id) {
       textToHtml(describe(err)),
       document.documentElement.dataset.theme !== 'light'
     );
+  }
+}
+
+/** Server-side where offered, local storage otherwise. */
+async function markRead(account, provider, id) {
+  const local = ui.messages.find((m) => m.id === id);
+  if (local && local.seen) return;
+
+  try {
+    if (provider.capabilities.serverSeen && provider.markSeen) {
+      await provider.markSeen(account, saverFor(account), id);
+    } else {
+      const seenIds = Array.from(new Set([id, ...(account.seenIds || [])])).slice(0, 200);
+      store.updateAccount(account.id, { seenIds });
+    }
+
+    if (local) local.seen = true;
+    store.updateAccount(account.id, { unread: Math.max(0, (account.unread || 0) - 1) });
+    renderMessages(new Set(), true);
+    renderAccounts(true);
+  } catch {
+    /* Marking read is cosmetic; the body is already on screen. */
   }
 }
 
@@ -713,7 +771,8 @@ function resizeFrame() {
 }
 
 function renderAttachments(account, msg) {
-  const list = msg.attachments || [];
+  const provider = providerFor(account);
+  const list = (provider.capabilities.attachments && msg.attachments) || [];
   if (!list.length) {
     el.readerAttachments.hidden = true;
     return;
@@ -741,13 +800,10 @@ function renderAttachments(account, msg) {
 }
 
 async function downloadAttachment(account, att, btn) {
-  const original = btn.textContent;
   btn.disabled = true;
   try {
     const provider = providerFor(account);
-    const blob = await withToken(account, (token) =>
-      api.fetchAttachment(provider, token, att.downloadUrl)
-    );
+    const blob = await provider.attachment(account, saverFor(account), att);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -760,7 +816,6 @@ async function downloadAttachment(account, att, btn) {
     notify.toast({ title: 'Download failed', body: describe(err), tone: 'warn' });
   } finally {
     btn.disabled = false;
-    btn.textContent = original;
   }
 }
 
@@ -777,14 +832,15 @@ function closeReader() {
 async function deleteOpenMessage() {
   const account = store.getActive();
   if (!account || !ui.openMessageId) return;
+  const provider = providerFor(account);
+  if (!provider.capabilities.deleteMessage) return;
   const id = ui.openMessageId;
 
   try {
-    const provider = providerFor(account);
-    await withToken(account, (token) => api.deleteMessage(provider, token, id));
+    await provider.deleteMessage(account, saverFor(account), id);
     ui.messages = ui.messages.filter((m) => m.id !== id);
     closeReader();
-    renderMessages();
+    renderMessages(new Set(), true);
     notify.toast({ title: 'Message deleted', tone: 'good', timeout: 3000 });
   } catch (err) {
     notify.toast({ title: 'Could not delete message', body: describe(err), tone: 'warn' });
@@ -796,13 +852,13 @@ async function deleteActiveAccount() {
   if (!account) return;
   if (!window.confirm(`Delete ${account.address}? Any mail it holds goes with it.`)) return;
 
+  const provider = providerFor(account);
   try {
-    const provider = providerFor(account);
-    if (account.accountId) {
-      await withToken(account, (token) => api.deleteAccount(provider, token, account.accountId));
+    if (provider.capabilities.deleteMailbox && provider.deleteMailbox) {
+      await provider.deleteMailbox(account, saverFor(account));
     }
   } catch {
-    // The provider expires mailboxes on its own; drop it locally regardless.
+    // Providers expire mailboxes on their own; drop it locally regardless.
   }
 
   store.removeAccount(account.id);
@@ -916,7 +972,11 @@ async function toggleDesktopNotifications() {
   }
 
   if (!notify.desktopSupported()) {
-    notify.toast({ title: 'Desktop notifications unsupported', body: 'This browser does not expose the Notification API.', tone: 'warn' });
+    notify.toast({
+      title: 'Desktop notifications unsupported',
+      body: 'This browser does not expose the Notification API.',
+      tone: 'warn',
+    });
     return;
   }
 
@@ -956,8 +1016,9 @@ function bindEvents() {
     }
   });
 
-  el.providerSelect.addEventListener('change', () => {
-    try { localStorage.setItem('tempbox.provider', el.providerSelect.value); } catch { /* ignore */ }
+  el.providerSelect.addEventListener('change', async () => {
+    try { localStorage.setItem(PROVIDER_KEY, el.providerSelect.value); } catch { /* ignore */ }
+    if (el.providerSelect.value === 'auto' && !ui.autoProvider) await probeProviders();
     loadDomains();
   });
 
@@ -1002,7 +1063,6 @@ function bindEvents() {
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       ui.pollFailures = 0;
-      restartPolling();
       clearTimeout(ui.pollTimer);
       pollCycle();
     } else {
@@ -1028,15 +1088,12 @@ async function init() {
   initTheme();
   notify.setBaseTitle('TempBox — Disposable Inbox Generator');
 
-  el.providerSelect.innerHTML = api.PROVIDERS
-    .map((p) => `<option value="${p.id}">${p.label}</option>`)
-    .join('');
+  renderProviderOptions();
 
   let savedProvider = null;
-  try { savedProvider = localStorage.getItem('tempbox.provider'); } catch { /* ignore */ }
-  if (savedProvider && api.PROVIDERS.some((p) => p.id === savedProvider)) {
-    el.providerSelect.value = savedProvider;
-  }
+  try { savedProvider = localStorage.getItem(PROVIDER_KEY); } catch { /* ignore */ }
+  const known = savedProvider === 'auto' || providers.PROVIDERS.some((p) => p.id === savedProvider);
+  el.providerSelect.value = known ? savedProvider : 'auto';
 
   el.usernameInput.value = store.generateUsername(el.styleSelect.value);
 
@@ -1044,7 +1101,18 @@ async function init() {
   bindEvents();
   renderAccounts();
 
-  await loadDomains();
+  if (el.providerSelect.value === 'auto') {
+    const reachable = await probeProviders();
+    if (!reachable.length) {
+      el.domainSelect.innerHTML = '<option value="">unavailable</option>';
+      el.createBtn.disabled = true;
+      reportAllUnreachable();
+    } else {
+      await loadDomains({ allowFailover: false });
+    }
+  } else {
+    await loadDomains();
+  }
 
   const active = store.getActive();
   if (active) {

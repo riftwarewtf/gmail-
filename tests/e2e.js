@@ -58,6 +58,11 @@ const requests = [];
     if (m.type() === 'error') errors.push(`console: ${m.text()}`);
   });
 
+  // Keep the other backends deterministic: this suite exercises mail.tm only.
+  for (const host of ['api.mail.gw', 'api.maildrop.cc', 'dropmail.me']) {
+    await ctx.route(`**://${host}/**`, (r) => r.abort('connectionfailed'));
+  }
+
   await ctx.route('**://api.mail.tm/**', async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -94,6 +99,11 @@ const requests = [];
   );
   const domainCount = await page.locator('#domain-select option').count();
   check('domains populate the dropdown', domainCount === 2, `${domainCount} options`);
+  check('auto mode is selected by default', (await page.inputValue('#provider-select')) === 'auto');
+  const autoLabel = await page.locator('#provider-select option[value="auto"]').textContent();
+  check('auto-probe resolved to the reachable backend', /mail\.tm/.test(autoLabel), autoLabel);
+  const gwLabel = await page.locator('#provider-select option[value="mailgw"]').textContent();
+  check('unreachable backends are marked in the picker', /no answer/.test(gwLabel), gwLabel);
 
   check('reader pane takes no space before a message is opened',
     (await page.locator('#reader').boundingBox()) === null);
@@ -189,6 +199,22 @@ const requests = [];
   check('back button shows on narrow screens', await page.locator('#back-btn').isVisible() || (await page.locator('#address-bar').isHidden()));
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   check('no horizontal overflow on mobile', overflow <= 1, `${overflow}px`);
+
+  // The header has to fit a wordmark, the provider picker and three buttons.
+  const collide = await page.evaluate(() => {
+    const boxes = [...document.querySelectorAll('.brand, #provider-select, .icon-btn')]
+      .map((n) => n.getBoundingClientRect())
+      .filter((r) => r.width > 0);
+    for (let i = 0; i < boxes.length; i += 1) {
+      for (let j = i + 1; j < boxes.length; j += 1) {
+        const a = boxes[i]; const b = boxes[j];
+        if (a.left < b.right - 1 && b.left < a.right - 1 &&
+            a.top < b.bottom - 1 && b.top < a.bottom - 1) return `${i}x${j}`;
+      }
+    }
+    return null;
+  });
+  check('header elements do not overlap on mobile', collide === null, collide || 'clear');
 
   console.log(results.join('\n'));
   console.log('\nrequests: ' + [...new Set(requests)].join(', '));

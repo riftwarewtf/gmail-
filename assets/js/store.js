@@ -86,6 +86,14 @@ function emptyState() {
   return { accounts: [], activeId: null, settings: { sound: true, desktop: false, images: false } };
 }
 
+/*
+ * A stored mailbox is provider-agnostic:
+ *   { id, provider, address, creds, createdAt, unread, knownIds, seenIds, primed }
+ * `creds` is whatever that provider's adapter needs to get back in — a password
+ * and token for mail.tm, just a mailbox name for maildrop, a session id for
+ * dropmail.
+ */
+
 function read() {
   try {
     const parsed = JSON.parse(localStorage.getItem(KEY) || 'null');
@@ -156,11 +164,11 @@ export function setSetting(key, value) {
 
 export function exportAccounts() {
   return JSON.stringify(
-    state.accounts.map(({ address, password, provider, createdAt }) => ({
+    state.accounts.map(({ address, provider, creds, createdAt }) => ({
       address,
-      password,
       provider,
       createdAt,
+      creds,
     })),
     null,
     2

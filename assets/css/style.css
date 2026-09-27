@@ -100,13 +100,17 @@ body {
 .brand__mark { width: 28px; height: 28px; color: var(--accent); flex: 0 0 auto; }
 
 .brand__text { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
-.brand__text strong { font-size: 15px; letter-spacing: .2px; }
+.brand__text strong {
+  font-size: 15px; letter-spacing: .2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .brand__text span {
   font-size: 11px; color: var(--fg-faint); text-transform: lowercase;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-.topbar__actions { display: flex; align-items: center; gap: 8px; }
+.topbar__actions { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; }
+.field--inline { min-width: 0; }
 
 /* ------------------------------------------------------------------ layout */
 
@@ -568,7 +572,17 @@ body {
 
   .footer { height: auto; padding: 8px 16px; line-height: 1.45; }
   .brand__text span { display: none; }
-  .topbar { padding: 0 11px; }
+  .topbar { padding: 0 11px; gap: 8px; }
+
+  /* The provider picker carries its own meaning ("Auto (mail.tm)"), so the
+     separate label is the first thing to go when space runs out. */
+  .field__label { display: none; }
+  .select--sm { min-width: 0; max-width: 150px; }
+}
+
+/* Below this the brand wordmark and the picker cannot both fit. */
+@media (max-width: 460px) {
+  .brand__text { display: none; }
   .toast-host { left: 12px; right: 12px; bottom: 12px; max-width: none; }
 }
 
