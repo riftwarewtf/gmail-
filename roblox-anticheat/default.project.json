@@ -1,0 +1,15 @@
+{
+  "name": "AntiCheat",
+  "tree": {
+    "$className": "DataModel",
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "AntiCheat": {
+        "$path": "AntiCheat"
+      },
+      "Bootstrap": {
+        "$path": "Bootstrap.server.lua"
+      }
+    }
+  }
+}
