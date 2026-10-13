@@ -1,4 +1,5 @@
 local CONFIG = {
+    AutoRankEnabled = true,
     AutoClaimRewards = true,
     AutoFarm = true,
     AutoHatch = true,
@@ -48,7 +49,7 @@ local MAX_CRAFT_PER_CALL = 50
 local MAX_UPGRADE_PER_CALL = 25
 local MAX_CLAIM_ATTEMPTS = 6
 local CLAIM_SLOW_RETRY = 60
-local GUI_WIDTH = 352
+local GUI_WIDTH = 300
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -207,6 +208,7 @@ end
 
 local state = {
     alive = true,
+    enabled = CONFIG.AutoRankEnabled ~= false,
     startedAt = os.clock(),
     rank = nil,
     goals = {},
@@ -1170,6 +1172,7 @@ local function wantsDiamonds()
 end
 
 local function farmTick()
+    if not state.enabled then return end
     if not CONFIG.AutoFarm then return end
     if state.worldSwitching or state.worldMismatch then return end
     if inInstance() then return end
@@ -1239,7 +1242,7 @@ local function farmTick()
 end
 
 local function onBreakableAdded(m)
-    if not (state.alive and CONFIG.AutoFarm) or state.worldSwitching or state.worldMismatch then return end
+    if not (state.alive and state.enabled and CONFIG.AutoFarm) or state.worldSwitching or state.worldMismatch then return end
     if typeof(m) ~= "Instance" or not m:IsA("Model") then return end
     local zoneId = cache.zoneId or bestZoneId()
     if not zoneId then return end
@@ -1306,7 +1309,7 @@ local function hatchAmount()
 end
 
 local function hatchPlanned()
-    return CONFIG.AutoHatch and (CONFIG.AlwaysHatch or state.plan.hatch == true)
+    return state.enabled and CONFIG.AutoHatch and (CONFIG.AlwaysHatch or state.plan.hatch == true)
 end
 
 local function hatchTick()
@@ -1703,6 +1706,7 @@ local function craftOrder(t)
 end
 
 local function craftTick()
+    if not state.enabled then return end
     if state.worldSwitching then return end
     local goals = {}
     for _, g in ipairs(state.goals) do
@@ -1797,6 +1801,7 @@ local function pickMiscStack(ids)
 end
 
 local function eventTick()
+    if not state.enabled then return end
     if not CONFIG.AutoSpawnEvents then return end
     if state.worldSwitching or state.worldMismatch or state.hopping then return end
     local wanted = {}
@@ -2133,6 +2138,11 @@ local function controllerTick()
                 tostring(goal.title), tostring(goal.Type), GOAL_TYPE_NAMES[goal.Type] or "")
         end
     end
+    if not state.enabled then
+        state.plan = { hatch = false, hatchReasons = {}, hatchEggOnly = false, hatchRemaining = nil }
+        state.action = "automation paused - rank tracking only"
+        return
+    end
     if state.worldSwitching then
         buildPlan()
         checkWorld()
@@ -2145,45 +2155,77 @@ local function controllerTick()
     buildPlan()
 end
 
+local function setEnabled(on)
+    on = on ~= false
+    if state.enabled == on then return on end
+    state.enabled = on
+    if on then
+        invalidateCaches()
+        state.action = "resuming"
+        log("Automation enabled")
+    else
+        state.action = "automation paused - rank tracking only"
+        log("Automation paused")
+    end
+    return on
+end
+
+handle.SetEnabled = setEnabled
+handle.Toggle = function() return setEnabled(not state.enabled) end
+handle.IsEnabled = function() return state.enabled == true end
+
 local buildGui, refreshGui
 do
     local PAL = {
-        shell = Color3.fromRGB(15, 16, 22),
-        surface = Color3.fromRGB(22, 24, 32),
-        raised = Color3.fromRGB(29, 32, 42),
-        line = Color3.fromRGB(45, 49, 63),
-        text = Color3.fromRGB(237, 240, 247),
-        dim = Color3.fromRGB(151, 158, 176),
-        faint = Color3.fromRGB(103, 110, 130),
-        accent = Color3.fromRGB(129, 93, 255),
-        accentAlt = Color3.fromRGB(84, 198, 255),
-        good = Color3.fromRGB(72, 214, 143),
-        warn = Color3.fromRGB(255, 190, 86),
-        bad = Color3.fromRGB(255, 94, 110),
+        shellTop = Color3.fromRGB(27, 32, 44),
+        shellBottom = Color3.fromRGB(13, 16, 23),
+        surface = Color3.fromRGB(21, 25, 34),
+        raised = Color3.fromRGB(28, 34, 46),
+        line = Color3.fromRGB(44, 53, 71),
+        text = Color3.fromRGB(234, 240, 248),
+        dim = Color3.fromRGB(143, 156, 178),
+        faint = Color3.fromRGB(97, 109, 132),
+        accent = Color3.fromRGB(26, 214, 182),
+        accentAlt = Color3.fromRGB(108, 124, 255),
+        warn = Color3.fromRGB(250, 196, 60),
+        bad = Color3.fromRGB(246, 94, 110),
     }
 
-    local FONT_BLACK = Enum.Font.GothamBlack
-    local FONT_BOLD = Enum.Font.GothamBold
-    local FONT_MED = Enum.Font.GothamMedium
-    local FONT_BODY = Enum.Font.Gotham
-
-    local TWEEN_FAST = TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-    local TWEEN_BAR = TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-    local TWEEN_SLIDE = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-    local TWEEN_PULSE = TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
-
-    local GUI_ROWS = 5
-    local SHADOW_SPREAD = 22
-    local GUI_BASE_POS = UDim2.new(0.028, 0, 0.1, 0)
-    local NUM_SUFFIX = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
-    local STAT_KEYS = {
-        { key = "hatched", caption = "HATCHED" },
-        { key = "claimed", caption = "CLAIMED" },
-        { key = "crafted", caption = "CRAFTED" },
-        { key = "itemsUsed", caption = "ITEMS" },
+    local FONT = {
+        black = Enum.Font.GothamBlack,
+        bold = Enum.Font.GothamBold,
+        med = Enum.Font.GothamMedium,
+        body = Enum.Font.Gotham,
     }
 
-    local GUI = { rows = {}, stats = {} }
+    local TW = {
+        fast = TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        bar = TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+        slide = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+        flash = TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        pulse = TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        sweep = TweenInfo.new(3.2, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
+        sheen = TweenInfo.new(2.4, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
+        spin = TweenInfo.new(11, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
+    }
+
+    local UI = {
+        rows = 4,
+        shadow = 20,
+        swW = 34,
+        swH = 16,
+        knob = 10,
+        pos = UDim2.new(0.028, 0, 0.11, 0),
+        suffix = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" },
+        chips = {
+            { key = "hatched", caption = "HATCHED" },
+            { key = "claimed", caption = "CLAIMED" },
+            { key = "crafted", caption = "CRAFTED" },
+            { key = "itemsUsed", caption = "ITEMS" },
+        },
+    }
+
+    local GUI = { rows = {}, stats = {}, shown = {} }
 
     local function create(class, props, parent)
         local inst = Instance.new(class)
@@ -2228,16 +2270,16 @@ do
         props.BorderSizePixel = 0
         props.BackgroundColor3 = props.BackgroundColor3 or PAL.surface
         local frame = create("Frame", props, parent)
-        corner(frame, radius or 8)
+        corner(frame, radius or 7)
         return frame
     end
 
     local function label(props, parent)
         if props.BackgroundTransparency == nil then props.BackgroundTransparency = 1 end
         props.BorderSizePixel = 0
-        props.Font = props.Font or FONT_BODY
+        props.Font = props.Font or FONT.body
         props.TextColor3 = props.TextColor3 or PAL.text
-        props.TextSize = props.TextSize or 12
+        props.TextSize = props.TextSize or 11
         props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
         return create("TextLabel", props, parent)
     end
@@ -2251,7 +2293,18 @@ do
         return nil
     end
 
-    local function bar(parent, position, size, radius, gradient)
+    local function flash(inst, prop, from, to, info)
+        inst[prop] = from
+        tween(inst, info or TW.flash, { [prop] = to })
+    end
+
+    local function sweep(gradient, info)
+        gradient.Offset = Vector2.new(-1, 0)
+        tween(gradient, info or TW.sweep, { Offset = Vector2.new(1, 0) })
+        return gradient
+    end
+
+    local function bar(parent, position, size, radius, sheen)
         local groove = create("Frame", {
             BackgroundColor3 = PAL.raised,
             BorderSizePixel = 0,
@@ -2260,23 +2313,29 @@ do
         }, parent)
         corner(groove, radius)
         local fill = create("Frame", {
-            BackgroundColor3 = gradient and Color3.fromRGB(255, 255, 255) or PAL.accent,
+            BackgroundColor3 = sheen and Color3.fromRGB(255, 255, 255) or PAL.accentAlt,
             BorderSizePixel = 0,
             Size = UDim2.new(0, 0, 1, 0),
         }, groove)
         corner(fill, radius)
-        if gradient then
-            create("UIGradient", { Color = ColorSequence.new(PAL.accent, PAL.accentAlt) }, fill)
+        if sheen then
+            sweep(create("UIGradient", {
+                Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0, PAL.accent),
+                    ColorSequenceKeypoint.new(0.5, PAL.accentAlt),
+                    ColorSequenceKeypoint.new(1, PAL.accent),
+                }),
+            }, fill), TW.sheen)
         end
         return groove, fill
     end
 
     local function setBar(fill, alpha, color)
         alpha = math.clamp(tonumber(alpha) or 0, 0, 1)
-        if alpha > 0 then alpha = math.max(alpha, 0.02) end
+        if alpha > 0 then alpha = math.max(alpha, 0.025) end
         if color and fill.BackgroundColor3 ~= color then fill.BackgroundColor3 = color end
         local target = UDim2.new(alpha, 0, 1, 0)
-        if fill.Size ~= target then tween(fill, TWEEN_BAR, { Size = target }) end
+        if fill.Size ~= target then tween(fill, TW.bar, { Size = target }) end
     end
 
     local function comma(n)
@@ -2298,7 +2357,7 @@ do
         if n < 0 then return "-" .. shortNum(-n) end
         if n < 10000 then return comma(n) end
         local i = 1
-        while n >= 1000 and i < #NUM_SUFFIX do
+        while n >= 1000 and i < #UI.suffix do
             n /= 1000
             i += 1
         end
@@ -2314,7 +2373,7 @@ do
             s = (string.gsub(s, "0+$", ""))
             s = (string.gsub(s, "%.$", ""))
         end
-        return s .. NUM_SUFFIX[i]
+        return s .. UI.suffix[i]
     end
 
     local function formatTime(total)
@@ -2336,44 +2395,99 @@ do
             BackgroundColor3 = PAL.raised,
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
-            Font = FONT_BOLD,
+            Font = FONT.bold,
             Text = text,
             TextColor3 = PAL.dim,
-            TextSize = 13,
-            Position = UDim2.new(1, offsetX, 0.5, -11),
-            Size = UDim2.new(0, 22, 0, 22),
+            TextSize = 12,
+            Position = UDim2.new(1, offsetX, 0.5, -9),
+            Size = UDim2.new(0, 18, 0, 18),
         }, parent)
-        corner(btn, 6)
+        corner(btn, 5)
         track(btn.MouseEnter:Connect(function()
-            tween(btn, TWEEN_FAST, { BackgroundTransparency = 0.1, TextColor3 = hoverColor })
+            tween(btn, TW.fast, { BackgroundTransparency = 0.1, TextColor3 = hoverColor })
         end))
         track(btn.MouseLeave:Connect(function()
-            tween(btn, TWEEN_FAST, { BackgroundTransparency = 1, TextColor3 = PAL.dim })
+            tween(btn, TW.fast, { BackgroundTransparency = 1, TextColor3 = PAL.dim })
         end))
         return btn
+    end
+
+    local function buildSwitch(parent)
+        local hit = create("TextButton", {
+            AutoButtonColor = false,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Text = "",
+            Position = UDim2.new(1, -90, 0.5, -11),
+            Size = UDim2.new(0, 38, 0, 22),
+        }, parent)
+
+        local groove = panel({
+            BackgroundColor3 = PAL.line,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0, UI.swW, 0, UI.swH),
+        }, hit, 8)
+        local ring = outline(groove, PAL.text, 1)
+        local glow = panel({
+            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 1, 0),
+            ZIndex = 1,
+        }, groove, 8)
+        create("UIGradient", { Color = ColorSequence.new(PAL.accent, PAL.accentAlt) }, glow)
+        local knob = panel({
+            BackgroundColor3 = PAL.dim,
+            Position = UDim2.new(0, 3, 0.5, -UI.knob / 2),
+            Size = UDim2.new(0, UI.knob, 0, UI.knob),
+            ZIndex = 2,
+        }, groove, UI.knob / 2)
+
+        GUI.switch = { groove = groove, glow = glow, knob = knob }
+        track(hit.MouseEnter:Connect(function()
+            tween(ring, TW.fast, { Transparency = 0.6 })
+        end))
+        track(hit.MouseLeave:Connect(function()
+            tween(ring, TW.fast, { Transparency = 1 })
+        end))
+        track(hit.MouseButton1Click:Connect(function()
+            setEnabled(not state.enabled)
+        end))
+        return hit
+    end
+
+    local function paintSwitch(on)
+        local sw = GUI.switch
+        if not sw or GUI.switchOn == on then return end
+        GUI.switchOn = on
+        tween(sw.glow, TW.slide, { BackgroundTransparency = on and 0 or 1 })
+        tween(sw.knob, TW.slide, {
+            Position = UDim2.new(0, on and (UI.swW - 3 - UI.knob) or 3, 0.5, -UI.knob / 2),
+            BackgroundColor3 = on and PAL.shellBottom or PAL.dim,
+        })
     end
 
     local function sectionCaption(text, parent, order)
         local row = create("Frame", {
             BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, 12),
+            Size = UDim2.new(1, 0, 0, 10),
             LayoutOrder = order,
         }, parent)
         label({
             Text = text,
-            Font = FONT_BOLD,
-            TextSize = 10,
+            Font = FONT.bold,
+            TextSize = 9,
             TextColor3 = PAL.faint,
-            Size = UDim2.new(0.6, 0, 1, 0),
+            Size = UDim2.new(0.5, 0, 1, 0),
         }, row)
         return label({
             Text = "",
-            Font = FONT_MED,
-            TextSize = 10,
+            Font = FONT.med,
+            TextSize = 9,
             TextColor3 = PAL.faint,
             TextXAlignment = Enum.TextXAlignment.Right,
-            Position = UDim2.new(0.4, 0, 0, 0),
-            Size = UDim2.new(0.6, 0, 1, 0),
+            Position = UDim2.new(0.5, 0, 0, 0),
+            Size = UDim2.new(0.5, 0, 1, 0),
         }, row)
     end
 
@@ -2381,130 +2495,116 @@ do
         local header = create("Frame", {
             Active = true,
             BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, 44),
+            Size = UDim2.new(1, 0, 0, 36),
             LayoutOrder = 1,
         }, main)
 
         local mark = panel({
             BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-            Position = UDim2.new(0, 14, 0.5, -13),
-            Size = UDim2.new(0, 26, 0, 26),
-        }, header, 7)
-        create("UIGradient", {
-            Color = ColorSequence.new(PAL.accentAlt, PAL.accent),
-            Rotation = 45,
+            Position = UDim2.new(0, 11, 0.5, -11),
+            Size = UDim2.new(0, 22, 0, 22),
+        }, header, 6)
+        local markGradient = create("UIGradient", {
+            Color = ColorSequence.new(PAL.accent, PAL.accentAlt),
+            Rotation = 0,
         }, mark)
+        tween(markGradient, TW.spin, { Rotation = 360 })
         label({
             Text = "R",
-            Font = FONT_BLACK,
-            TextSize = 15,
-            TextColor3 = Color3.fromRGB(14, 15, 20),
+            Font = FONT.black,
+            TextSize = 13,
+            TextColor3 = PAL.shellBottom,
             TextXAlignment = Enum.TextXAlignment.Center,
             Size = UDim2.new(1, 0, 1, 0),
         }, mark)
 
         label({
             Text = "RIFTWARE",
-            Font = FONT_BOLD,
-            TextSize = 13,
-            Position = UDim2.new(0, 48, 0, 10),
-            Size = UDim2.new(1, -172, 0, 13),
+            Font = FONT.bold,
+            TextSize = 12,
+            Position = UDim2.new(0, 40, 0, 6),
+            Size = UDim2.new(1, -140, 0, 12),
         }, header)
         label({
-            Text = "AutoRank",
-            Font = FONT_MED,
-            TextSize = 10,
+            Text = "AutoRank v" .. VERSION,
+            Font = FONT.med,
+            TextSize = 9,
             TextColor3 = PAL.faint,
-            Position = UDim2.new(0, 48, 0, 23),
-            Size = UDim2.new(1, -172, 0, 11),
+            Position = UDim2.new(0, 40, 0, 18),
+            Size = UDim2.new(1, -140, 0, 10),
         }, header)
 
-        local badge = panel({
-            BackgroundColor3 = PAL.raised,
-            Position = UDim2.new(1, -118, 0.5, -9),
-            Size = UDim2.new(0, 46, 0, 18),
-        }, header, 9)
-        outline(badge, PAL.line, 0.3)
-        label({
-            Text = "v" .. VERSION,
-            Font = FONT_MED,
-            TextSize = 10,
-            TextColor3 = PAL.dim,
-            TextXAlignment = Enum.TextXAlignment.Center,
-            Size = UDim2.new(1, 0, 1, 0),
-        }, badge)
-
-        local minBtn = iconButton(header, -60, "\u{2013}", PAL.text)
-        local closeBtn = iconButton(header, -34, "\u{00D7}", PAL.bad)
+        buildSwitch(header)
+        local minBtn = iconButton(header, -48, "\u{2013}", PAL.text)
+        local closeBtn = iconButton(header, -26, "\u{00D7}", PAL.bad)
         return header, minBtn, closeBtn
     end
 
     local function buildRankCard(parent)
-        local card = panel({ Size = UDim2.new(1, 0, 0, 100), LayoutOrder = 1 }, parent, 10)
-        outline(card, PAL.line, 0.45)
-        inset(card, 12, 12, 12, 12)
+        local card = panel({ Size = UDim2.new(1, 0, 0, 76), LayoutOrder = 1 }, parent, 9)
+        GUI.rankStroke = outline(card, PAL.line, 0.45)
+        inset(card, 10, 10, 10, 10)
 
         label({
             Text = "CURRENT RANK",
-            Font = FONT_BOLD,
-            TextSize = 10,
+            Font = FONT.bold,
+            TextSize = 9,
             TextColor3 = PAL.faint,
-            Size = UDim2.new(0.6, 0, 0, 12),
+            Size = UDim2.new(0.6, 0, 0, 10),
         }, card)
 
         GUI.flag = label({
             AutomaticSize = Enum.AutomaticSize.X,
             BackgroundColor3 = PAL.warn,
             BackgroundTransparency = 0.85,
-            Font = FONT_BOLD,
+            Font = FONT.bold,
             Text = "",
-            TextSize = 9,
+            TextSize = 8,
             TextColor3 = PAL.warn,
             TextXAlignment = Enum.TextXAlignment.Center,
             AnchorPoint = Vector2.new(1, 0),
             Position = UDim2.new(1, 0, 0, -1),
-            Size = UDim2.new(0, 0, 0, 16),
+            Size = UDim2.new(0, 0, 0, 14),
             Visible = false,
         }, card)
-        corner(GUI.flag, 5)
-        inset(GUI.flag, 0, 7, 0, 7)
+        corner(GUI.flag, 4)
+        inset(GUI.flag, 0, 6, 0, 6)
 
         GUI.rankNumber = label({
             Text = "\u{2013}",
-            Font = FONT_BLACK,
-            TextSize = 26,
-            Position = UDim2.new(0, 0, 0, 16),
-            Size = UDim2.new(0, 56, 0, 30),
+            Font = FONT.black,
+            TextSize = 22,
+            Position = UDim2.new(0, 0, 0, 11),
+            Size = UDim2.new(0, 44, 0, 26),
         }, card)
         GUI.rankTitle = label({
             Text = "connecting",
-            Font = FONT_BOLD,
-            TextSize = 14,
-            TextColor3 = PAL.text,
-            Position = UDim2.new(0, 60, 0, 22),
-            Size = UDim2.new(1, -60, 0, 18),
+            Font = FONT.bold,
+            TextSize = 13,
+            Position = UDim2.new(0, 48, 0, 17),
+            Size = UDim2.new(1, -48, 0, 16),
             TextTruncate = Enum.TextTruncate.AtEnd,
         }, card)
 
         GUI.starText = label({
             Text = "0 / 0 stars",
-            Font = FONT_MED,
-            TextSize = 11,
+            Font = FONT.med,
+            TextSize = 10,
             TextColor3 = PAL.dim,
-            Position = UDim2.new(0, 0, 0, 52),
-            Size = UDim2.new(0.45, 0, 0, 13),
+            Position = UDim2.new(0, 0, 0, 38),
+            Size = UDim2.new(0.42, 0, 0, 11),
         }, card)
         GUI.rewardText = label({
             Text = "",
-            Font = FONT_MED,
-            TextSize = 11,
+            Font = FONT.med,
+            TextSize = 9,
             TextColor3 = PAL.faint,
             TextXAlignment = Enum.TextXAlignment.Right,
-            Position = UDim2.new(0.45, 0, 0, 52),
-            Size = UDim2.new(0.55, 0, 0, 13),
+            Position = UDim2.new(0.42, 0, 0, 39),
+            Size = UDim2.new(0.58, 0, 0, 10),
         }, card)
 
-        local _, fill = bar(card, UDim2.new(0, 0, 0, 70), UDim2.new(1, 0, 0, 6), 3, true)
+        local _, fill = bar(card, UDim2.new(0, 0, 0, 51), UDim2.new(1, 0, 0, 5), 3, true)
         GUI.starFill = fill
         return card
     end
@@ -2512,45 +2612,45 @@ do
     local function buildGoalRow(parent, index)
         local row = panel({
             BackgroundColor3 = PAL.raised,
-            Size = UDim2.new(1, 0, 0, 42),
+            Size = UDim2.new(1, 0, 0, 34),
             Visible = false,
             LayoutOrder = index + 1,
-        }, parent, 8)
+        }, parent, 7)
 
         local badge = panel({
-            BackgroundColor3 = PAL.accent,
+            BackgroundColor3 = PAL.accentAlt,
             BackgroundTransparency = 0.8,
-            Position = UDim2.new(0, 10, 0, 8),
-            Size = UDim2.new(0, 34, 0, 16),
-        }, row, 5)
+            Position = UDim2.new(0, 8, 0, 6),
+            Size = UDim2.new(0, 28, 0, 14),
+        }, row, 4)
         local badgeText = label({
             Text = "",
-            Font = FONT_BOLD,
-            TextSize = 10,
-            TextColor3 = PAL.accent,
+            Font = FONT.bold,
+            TextSize = 9,
+            TextColor3 = PAL.accentAlt,
             TextXAlignment = Enum.TextXAlignment.Center,
             Size = UDim2.new(1, 0, 1, 0),
         }, badge)
         local title = label({
             Text = "",
-            Font = FONT_MED,
-            TextSize = 12,
-            Position = UDim2.new(0, 52, 0, 7),
-            Size = UDim2.new(1, -134, 0, 15),
+            Font = FONT.med,
+            TextSize = 11,
+            Position = UDim2.new(0, 42, 0, 5),
+            Size = UDim2.new(1, -110, 0, 13),
             TextTruncate = Enum.TextTruncate.AtEnd,
         }, row)
         local value = label({
             Text = "",
-            Font = FONT_BOLD,
-            TextSize = 11,
+            Font = FONT.bold,
+            TextSize = 10,
             TextColor3 = PAL.dim,
             TextXAlignment = Enum.TextXAlignment.Right,
-            Position = UDim2.new(1, -78, 0, 7),
-            Size = UDim2.new(0, 68, 0, 15),
+            Position = UDim2.new(1, -66, 0, 5),
+            Size = UDim2.new(0, 58, 0, 13),
         }, row)
-        local _, fill = bar(row, UDim2.new(0, 10, 0, 29), UDim2.new(1, -20, 0, 5), 3, false)
+        local _, fill = bar(row, UDim2.new(0, 8, 0, 23), UDim2.new(1, -16, 0, 4), 2, false)
 
-        return { frame = row, badge = badge, badgeText = badgeText, title = title, value = value, fill = fill }
+        return { frame = row, badge = badge, badgeText = badgeText, title = title, value = value, fill = fill, seen = -1 }
     end
 
     local function buildGoals(parent)
@@ -2560,18 +2660,18 @@ do
             Size = UDim2.new(1, 0, 0, 0),
             LayoutOrder = 2,
         }, parent)
-        column(section, 6)
+        column(section, 5)
         GUI.goalCount = sectionCaption("RANK GOALS", section, 1)
-        for i = 1, GUI_ROWS do
+        for i = 1, UI.rows do
             GUI.rows[i] = buildGoalRow(section, i)
         end
         GUI.goalEmpty = label({
             Text = "waiting for goal data",
-            Font = FONT_MED,
-            TextSize = 11,
+            Font = FONT.med,
+            TextSize = 10,
             TextColor3 = PAL.faint,
-            Size = UDim2.new(1, 0, 0, 18),
-            LayoutOrder = GUI_ROWS + 2,
+            Size = UDim2.new(1, 0, 0, 16),
+            LayoutOrder = UI.rows + 2,
         }, section)
         return section
     end
@@ -2581,12 +2681,11 @@ do
             AutomaticSize = Enum.AutomaticSize.Y,
             Size = UDim2.new(1, 0, 0, 0),
             LayoutOrder = 3,
-        }, parent, 8)
+        }, parent, 7)
         outline(card, PAL.line, 0.55)
 
         GUI.statusStripe = panel({
-            BackgroundColor3 = PAL.good,
-            Position = UDim2.new(0, 0, 0, 0),
+            BackgroundColor3 = PAL.accent,
             Size = UDim2.new(0, 3, 1, 0),
         }, card, 2)
 
@@ -2595,25 +2694,24 @@ do
             BackgroundTransparency = 1,
             Size = UDim2.new(1, 0, 0, 0),
         }, card)
-        inset(holder, 11, 12, 11, 15)
+        inset(holder, 9, 10, 9, 13)
 
         GUI.statusDot = panel({
-            BackgroundColor3 = PAL.good,
-            Position = UDim2.new(0, 0, 0, 4),
-            Size = UDim2.new(0, 7, 0, 7),
-        }, holder, 4)
-        tween(GUI.statusDot, TWEEN_PULSE, { BackgroundTransparency = 0.6 })
+            BackgroundColor3 = PAL.accent,
+            Position = UDim2.new(0, 0, 0, 3),
+            Size = UDim2.new(0, 6, 0, 6),
+        }, holder, 3)
+        tween(GUI.statusDot, TW.pulse, { BackgroundTransparency = 0.6 })
 
         GUI.statusText = label({
             AutomaticSize = Enum.AutomaticSize.Y,
             Text = "starting",
-            Font = FONT_MED,
-            TextSize = 11,
-            TextColor3 = PAL.text,
+            Font = FONT.med,
+            TextSize = 10,
             TextWrapped = true,
             TextYAlignment = Enum.TextYAlignment.Top,
-            Position = UDim2.new(0, 16, 0, 0),
-            Size = UDim2.new(1, -16, 0, 14),
+            Position = UDim2.new(0, 14, 0, 0),
+            Size = UDim2.new(1, -14, 0, 12),
         }, holder)
         return card
     end
@@ -2621,33 +2719,33 @@ do
     local function buildStats(parent)
         local grid = create("Frame", {
             BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, 46),
+            Size = UDim2.new(1, 0, 0, 38),
             LayoutOrder = 4,
         }, parent)
         create("UIGridLayout", {
-            CellPadding = UDim2.new(0, 6, 0, 6),
-            CellSize = UDim2.new(0.25, -5, 0, 46),
+            CellPadding = UDim2.new(0, 5, 0, 5),
+            CellSize = UDim2.new(0.25, -4, 0, 38),
             SortOrder = Enum.SortOrder.LayoutOrder,
         }, grid)
 
-        for i, def in ipairs(STAT_KEYS) do
-            local chip = panel({ BackgroundColor3 = PAL.raised, LayoutOrder = i }, grid, 8)
+        for i, def in ipairs(UI.chips) do
+            local chip = panel({ BackgroundColor3 = PAL.raised, LayoutOrder = i }, grid, 7)
             local value = label({
                 Text = "0",
-                Font = FONT_BOLD,
-                TextSize = 14,
+                Font = FONT.bold,
+                TextSize = 12,
                 TextXAlignment = Enum.TextXAlignment.Center,
-                Position = UDim2.new(0, 0, 0, 8),
-                Size = UDim2.new(1, 0, 0, 17),
+                Position = UDim2.new(0, 0, 0, 6),
+                Size = UDim2.new(1, 0, 0, 15),
             }, chip)
             label({
                 Text = def.caption,
-                Font = FONT_MED,
-                TextSize = 9,
+                Font = FONT.med,
+                TextSize = 8,
                 TextColor3 = PAL.faint,
                 TextXAlignment = Enum.TextXAlignment.Center,
-                Position = UDim2.new(0, 0, 0, 27),
-                Size = UDim2.new(1, 0, 0, 11),
+                Position = UDim2.new(0, 0, 0, 22),
+                Size = UDim2.new(1, 0, 0, 9),
             }, chip)
             GUI.stats[def.key] = value
         end
@@ -2657,51 +2755,57 @@ do
     local function buildFooter(parent)
         local footer = create("Frame", {
             BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, 32),
+            Size = UDim2.new(1, 0, 0, 26),
             LayoutOrder = 5,
         }, parent)
-        create("Frame", {
-            BackgroundColor3 = PAL.line,
-            BackgroundTransparency = 0.4,
+        local seam = create("Frame", {
+            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
             BorderSizePixel = 0,
             Size = UDim2.new(1, 0, 0, 1),
         }, footer)
+        create("UIGradient", {
+            Color = ColorSequence.new(PAL.accent, PAL.accentAlt),
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0.55),
+                NumberSequenceKeypoint.new(1, 0.9),
+            }),
+        }, seam)
 
         GUI.footerTarget = label({
             Text = "",
-            Font = FONT_MED,
-            TextSize = 10,
+            Font = FONT.med,
+            TextSize = 9,
             TextColor3 = PAL.dim,
-            Position = UDim2.new(0, 0, 0, 8),
-            Size = UDim2.new(0.68, 0, 0, 12),
+            Position = UDim2.new(0, 0, 0, 6),
+            Size = UDim2.new(0.66, 0, 0, 10),
             TextTruncate = Enum.TextTruncate.AtEnd,
         }, footer)
         GUI.footerClock = label({
             Text = "00:00:00",
-            Font = FONT_BOLD,
-            TextSize = 10,
+            Font = FONT.bold,
+            TextSize = 9,
             TextColor3 = PAL.dim,
             TextXAlignment = Enum.TextXAlignment.Right,
-            Position = UDim2.new(0.68, 0, 0, 8),
-            Size = UDim2.new(0.32, 0, 0, 12),
+            Position = UDim2.new(0.66, 0, 0, 6),
+            Size = UDim2.new(0.34, 0, 0, 10),
         }, footer)
         GUI.footerFarm = label({
             Text = "",
-            Font = FONT_BODY,
-            TextSize = 10,
+            Font = FONT.body,
+            TextSize = 9,
             TextColor3 = PAL.faint,
-            Position = UDim2.new(0, 0, 0, 20),
-            Size = UDim2.new(0.58, 0, 0, 11),
+            Position = UDim2.new(0, 0, 0, 16),
+            Size = UDim2.new(0.6, 0, 0, 9),
             TextTruncate = Enum.TextTruncate.AtEnd,
         }, footer)
         label({
             Text = (CONFIG.GuiToggleKey and CONFIG.GuiToggleKey.Name or "none") .. " hides",
-            Font = FONT_BODY,
-            TextSize = 10,
+            Font = FONT.body,
+            TextSize = 9,
             TextColor3 = PAL.faint,
             TextXAlignment = Enum.TextXAlignment.Right,
-            Position = UDim2.new(0.42, 0, 0, 20),
-            Size = UDim2.new(0.58, 0, 0, 11),
+            Position = UDim2.new(0.4, 0, 0, 16),
+            Size = UDim2.new(0.6, 0, 0, 9),
         }, footer)
         return footer
     end
@@ -2735,14 +2839,14 @@ do
             collapsed = not collapsed
             if collapsed then
                 measured = body.AbsoluteSize.Y
-                if measured <= 0 then measured = 260 end
+                if measured <= 0 then measured = 240 end
                 body.AutomaticSize = Enum.AutomaticSize.None
                 body.Size = UDim2.new(1, 0, 0, measured)
                 minBtn.Text = "+"
-                tween(body, TWEEN_SLIDE, { Size = UDim2.new(1, 0, 0, 0) })
+                tween(body, TW.slide, { Size = UDim2.new(1, 0, 0, 0) })
             else
                 minBtn.Text = "\u{2013}"
-                local anim = tween(body, TWEEN_SLIDE, { Size = UDim2.new(1, 0, 0, measured > 0 and measured or 260) })
+                local anim = tween(body, TW.slide, { Size = UDim2.new(1, 0, 0, measured > 0 and measured or 240) })
                 if anim then
                     anim.Completed:Connect(function()
                         if not collapsed then body.AutomaticSize = Enum.AutomaticSize.Y end
@@ -2772,12 +2876,16 @@ do
                 Name = "Window",
                 Active = true,
                 AutomaticSize = Enum.AutomaticSize.Y,
-                BackgroundColor3 = PAL.shell,
-                Position = GUI_BASE_POS + UDim2.new(0, 0, 0, 14),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                Position = UI.pos + UDim2.new(0, 0, 0, 12),
                 Size = UDim2.new(0, GUI_WIDTH, 0, 0),
                 ZIndex = 2,
-            }, sg, 12)
-            outline(main, PAL.line, 0.15)
+            }, sg, 11)
+            create("UIGradient", {
+                Color = ColorSequence.new(PAL.shellTop, PAL.shellBottom),
+                Rotation = 90,
+            }, main)
+            outline(main, PAL.line, 0.1)
             column(main, 0)
             GUI.main = main
 
@@ -2786,14 +2894,14 @@ do
                 BackgroundTransparency = 1,
                 Image = "rbxassetid://6014261993",
                 ImageColor3 = Color3.fromRGB(0, 0, 0),
-                ImageTransparency = 0.5,
+                ImageTransparency = 0.45,
                 ScaleType = Enum.ScaleType.Slice,
                 SliceCenter = Rect.new(49, 49, 450, 450),
                 ZIndex = 0,
             }, sg)
             local function syncShadow()
-                shadow.Position = main.Position - UDim2.new(0, SHADOW_SPREAD, 0, SHADOW_SPREAD)
-                shadow.Size = UDim2.new(0, main.AbsoluteSize.X + SHADOW_SPREAD * 2, 0, main.AbsoluteSize.Y + SHADOW_SPREAD * 2)
+                shadow.Position = main.Position - UDim2.new(0, UI.shadow, 0, UI.shadow)
+                shadow.Size = UDim2.new(0, main.AbsoluteSize.X + UI.shadow * 2, 0, main.AbsoluteSize.Y + UI.shadow * 2)
             end
             pcall(function()
                 track(main:GetPropertyChangedSignal("AbsoluteSize"):Connect(syncShadow))
@@ -2807,17 +2915,22 @@ do
                 Name = "Rule",
                 BackgroundColor3 = Color3.fromRGB(255, 255, 255),
                 BorderSizePixel = 0,
-                Size = UDim2.new(1, 0, 0, 2),
+                Size = UDim2.new(0, 0, 0, 2),
                 LayoutOrder = 2,
             }, main)
-            create("UIGradient", {
-                Color = ColorSequence.new(PAL.accent, PAL.accentAlt),
-                Transparency = NumberSequence.new({
-                    NumberSequenceKeypoint.new(0, 0.85),
-                    NumberSequenceKeypoint.new(0.5, 0.1),
-                    NumberSequenceKeypoint.new(1, 0.85),
+            sweep(create("UIGradient", {
+                Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0, PAL.accent),
+                    ColorSequenceKeypoint.new(0.5, PAL.accentAlt),
+                    ColorSequenceKeypoint.new(1, PAL.accent),
                 }),
-            }, rule)
+                Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 0.8),
+                    NumberSequenceKeypoint.new(0.5, 0),
+                    NumberSequenceKeypoint.new(1, 0.8),
+                }),
+            }, rule))
+            tween(rule, TW.bar, { Size = UDim2.new(1, 0, 0, 2) })
 
             local body = create("Frame", {
                 Name = "Body",
@@ -2827,8 +2940,8 @@ do
                 Size = UDim2.new(1, 0, 0, 0),
                 LayoutOrder = 3,
             }, main)
-            inset(body, 12, 12, 12, 12)
-            column(body, 10)
+            inset(body, 10, 10, 10, 10)
+            column(body, 7)
 
             buildRankCard(body)
             buildGoals(body)
@@ -2845,7 +2958,8 @@ do
                     gui.Enabled = not gui.Enabled
                 end
             end))
-            tween(main, TWEEN_SLIDE, { Position = GUI_BASE_POS })
+            paintSwitch(state.enabled == true)
+            tween(main, TW.slide, { Position = UI.pos })
         end)
         if ok then
             log("GUI created (toggle: %s)", tostring(CONFIG.GuiToggleKey and CONFIG.GuiToggleKey.Name or "none"))
@@ -2857,13 +2971,18 @@ do
     local function setFlag(text, color)
         local flag = GUI.flag
         if not flag then return end
-        if text then
+        if not text then
+            flag.Visible = false
+            GUI.flagText = nil
+            return
+        end
+        if GUI.flagText ~= text then
+            GUI.flagText = text
             flag.Text = text
             flag.TextColor3 = color
             flag.BackgroundColor3 = color
             flag.Visible = true
-        else
-            flag.Visible = false
+            flash(flag, "BackgroundTransparency", 0.45, 0.85)
         end
     end
 
@@ -2880,6 +2999,13 @@ do
         end
         local stars = tonumber(info.stars) or 0
         local total = tonumber(info.totalStars) or 0
+        if GUI.shown.rank ~= info.rankNumber then
+            if GUI.shown.rank ~= nil then
+                flash(GUI.rankNumber, "TextColor3", PAL.accent, PAL.text)
+                flash(GUI.rankStroke, "Color", PAL.accent, PAL.line)
+            end
+            GUI.shown.rank = info.rankNumber
+        end
         GUI.rankNumber.Text = int(info.rankNumber)
         GUI.rankTitle.Text = tostring(info.title)
         GUI.starText.Text = string.format("%s / %s stars", shortNum(stars), shortNum(total))
@@ -2894,8 +3020,10 @@ do
         end
         GUI.rewardText.Text = rewards
 
-        if info.isMax then
-            setFlag("MAX RANK", PAL.good)
+        if not state.enabled then
+            setFlag("PAUSED", PAL.warn)
+        elseif info.isMax then
+            setFlag("MAX RANK", PAL.accent)
         elseif state.worldSwitching then
             setFlag("TELEPORTING", PAL.accentAlt)
         elseif state.worldMismatch then
@@ -2912,35 +3040,42 @@ do
     local function refreshGoals()
         local goals = state.goals or {}
         local manual = 0
-        for i = 1, GUI_ROWS do
+        for i = 1, UI.rows do
             local row = GUI.rows[i]
             local goal = goals[i]
             if not goal then
                 row.frame.Visible = false
+                row.seen = -1
             else
                 local amount = tonumber(goal.Amount) or 0
                 local progress = tonumber(goal.Progress) or 0
                 local done = amount > 0 and progress >= amount
-                local tint = PAL.accent
+                local tint = PAL.accentAlt
                 if done then
-                    tint = PAL.good
+                    tint = PAL.accent
                 elseif not goal.supported then
                     tint = PAL.bad
                     manual += 1
                 end
-                row.frame.Visible = true
+                if not row.frame.Visible then
+                    row.frame.Visible = true
+                    flash(row.frame, "BackgroundTransparency", 1, 0, TW.slide)
+                end
                 row.badge.BackgroundColor3 = tint
                 row.badgeText.TextColor3 = tint
-                row.badgeText.TextSize = done and 9 or 10
                 row.badgeText.Text = done and "DONE" or ("+" .. int(goal.Stars))
                 row.title.Text = tostring(goal.title) .. (goal.supported and "" or "  (manual)")
                 row.title.TextColor3 = goal.supported and PAL.text or PAL.dim
                 row.value.Text = string.format("%s / %s", shortNum(progress), shortNum(amount))
-                row.value.TextColor3 = done and PAL.good or PAL.dim
+                row.value.TextColor3 = done and PAL.accent or PAL.dim
                 setBar(row.fill, amount > 0 and progress / amount or 0, tint)
+                if row.seen >= 0 and progress > row.seen then
+                    flash(row.frame, "BackgroundColor3", tint:Lerp(PAL.raised, 0.78), PAL.raised)
+                end
+                row.seen = progress
             end
         end
-        local shown = math.min(#goals, GUI_ROWS)
+        local shown = math.min(#goals, UI.rows)
         GUI.goalEmpty.Visible = shown == 0
         if shown == 0 then
             GUI.goalCount.Text = ""
@@ -2952,25 +3087,33 @@ do
     end
 
     local function refreshStatus()
-        local color = PAL.good
+        local color = PAL.accent
         if not state.alive then
             color = PAL.bad
+        elseif not state.enabled then
+            color = PAL.warn
         elseif state.worldMismatch then
             color = PAL.bad
         elseif state.worldSwitching or state.hopping then
-            color = PAL.warn
+            color = PAL.accentAlt
         end
-        if GUI.statusDot.BackgroundColor3 ~= color then
-            GUI.statusDot.BackgroundColor3 = color
-            GUI.statusStripe.BackgroundColor3 = color
+        if GUI.shown.status ~= color then
+            GUI.shown.status = color
+            tween(GUI.statusDot, TW.fast, { BackgroundColor3 = color })
+            tween(GUI.statusStripe, TW.fast, { BackgroundColor3 = color })
         end
         GUI.statusText.Text = tostring(state.action)
+        paintSwitch(state.enabled == true)
     end
 
     local function refreshFooter()
         local counters = state.counters
         for key, value in pairs(GUI.stats) do
-            value.Text = shortNum(counters[key] or 0)
+            local text = shortNum(counters[key] or 0)
+            if value.Text ~= text then
+                value.Text = text
+                flash(value, "TextColor3", PAL.accent, PAL.text)
+            end
         end
         local zone = cache.zone
         local zoneName = (zone and (zone.ZoneName or zone._id)) or cache.zoneId or "?"
@@ -3009,7 +3152,7 @@ local function spawnLoop(name, tickFn, intervalFn)
 end
 
 local function farmInterval()
-    if not CONFIG.AutoFarm or state.worldSwitching or state.worldMismatch then return 1 end
+    if not CONFIG.AutoFarm or not state.enabled or state.worldSwitching or state.worldMismatch then return 1 end
     return CONFIG.FarmTick
 end
 
@@ -3114,7 +3257,7 @@ local function main()
     if not ok then warnlog("first-tick", "first controller tick failed: %s", tostring(err)) end
     startThreads()
     pcall(startupSummary)
-    log("All threads running. Stop with getgenv().RiftwareAutoRank.Stop() or the close button in the panel.")
+    log("All threads running. Toggle automation with the panel switch or getgenv().RiftwareAutoRank.SetEnabled(true/false); stop with .Stop()")
 end
 
 task.spawn(function()
