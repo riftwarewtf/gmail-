@@ -2177,18 +2177,19 @@ handle.IsEnabled = function() return state.enabled == true end
 local buildGui, refreshGui
 do
     local PAL = {
-        shellTop = Color3.fromRGB(27, 32, 44),
-        shellBottom = Color3.fromRGB(13, 16, 23),
-        surface = Color3.fromRGB(21, 25, 34),
-        raised = Color3.fromRGB(28, 34, 46),
-        line = Color3.fromRGB(44, 53, 71),
-        text = Color3.fromRGB(234, 240, 248),
-        dim = Color3.fromRGB(143, 156, 178),
-        faint = Color3.fromRGB(97, 109, 132),
-        accent = Color3.fromRGB(26, 214, 182),
-        accentAlt = Color3.fromRGB(108, 124, 255),
-        warn = Color3.fromRGB(250, 196, 60),
-        bad = Color3.fromRGB(246, 94, 110),
+        shellTop = Color3.fromRGB(28, 28, 28),
+        shellBottom = Color3.fromRGB(8, 8, 8),
+        surface = Color3.fromRGB(17, 17, 17),
+        raised = Color3.fromRGB(27, 27, 27),
+        line = Color3.fromRGB(58, 58, 58),
+        text = Color3.fromRGB(246, 246, 246),
+        dim = Color3.fromRGB(158, 158, 158),
+        faint = Color3.fromRGB(106, 106, 106),
+        accent = Color3.fromRGB(255, 255, 255),
+        accentAlt = Color3.fromRGB(168, 168, 168),
+        warn = Color3.fromRGB(208, 208, 208),
+        bad = Color3.fromRGB(118, 118, 118),
+        ink = Color3.fromRGB(10, 10, 10),
     }
 
     local FONT = {
@@ -2206,11 +2207,12 @@ do
         pulse = TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
         sweep = TweenInfo.new(3.2, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
         sheen = TweenInfo.new(2.4, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
-        spin = TweenInfo.new(11, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
+        alert = TweenInfo.new(0.34, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
     }
 
     local UI = {
         rows = 4,
+        icon = "rbxassetid://127992680361909",
         shadow = 20,
         swW = 34,
         swH = 16,
@@ -2500,22 +2502,20 @@ do
         }, main)
 
         local mark = panel({
-            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+            BackgroundColor3 = PAL.accent,
+            BackgroundTransparency = 0.93,
             Position = UDim2.new(0, 11, 0.5, -11),
             Size = UDim2.new(0, 22, 0, 22),
         }, header, 6)
-        local markGradient = create("UIGradient", {
-            Color = ColorSequence.new(PAL.accent, PAL.accentAlt),
-            Rotation = 0,
-        }, mark)
-        tween(markGradient, TW.spin, { Rotation = 360 })
-        label({
-            Text = "R",
-            Font = FONT.black,
-            TextSize = 13,
-            TextColor3 = PAL.shellBottom,
-            TextXAlignment = Enum.TextXAlignment.Center,
-            Size = UDim2.new(1, 0, 1, 0),
+        outline(mark, PAL.line, 0.5)
+        create("ImageLabel", {
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Image = UI.icon,
+            ScaleType = Enum.ScaleType.Fit,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(1, -5, 1, -5),
         }, mark)
 
         label({
@@ -2536,7 +2536,7 @@ do
 
         buildSwitch(header)
         local minBtn = iconButton(header, -48, "\u{2013}", PAL.text)
-        local closeBtn = iconButton(header, -26, "\u{00D7}", PAL.bad)
+        local closeBtn = iconButton(header, -26, "\u{00D7}", PAL.accent)
         return header, minBtn, closeBtn
     end
 
@@ -2555,12 +2555,12 @@ do
 
         GUI.flag = label({
             AutomaticSize = Enum.AutomaticSize.X,
-            BackgroundColor3 = PAL.warn,
-            BackgroundTransparency = 0.85,
+            BackgroundColor3 = PAL.accent,
+            BackgroundTransparency = 0.9,
             Font = FONT.bold,
             Text = "",
             TextSize = 8,
-            TextColor3 = PAL.warn,
+            TextColor3 = PAL.accent,
             TextXAlignment = Enum.TextXAlignment.Center,
             AnchorPoint = Vector2.new(1, 0),
             Position = UDim2.new(1, 0, 0, -1),
@@ -2569,6 +2569,7 @@ do
         }, card)
         corner(GUI.flag, 4)
         inset(GUI.flag, 0, 6, 0, 6)
+        GUI.flagStroke = outline(GUI.flag, PAL.accent, 0.6)
 
         GUI.rankNumber = label({
             Text = "\u{2013}",
@@ -2701,7 +2702,6 @@ do
             Position = UDim2.new(0, 0, 0, 3),
             Size = UDim2.new(0, 6, 0, 6),
         }, holder, 3)
-        tween(GUI.statusDot, TW.pulse, { BackgroundTransparency = 0.6 })
 
         GUI.statusText = label({
             AutomaticSize = Enum.AutomaticSize.Y,
@@ -2968,7 +2968,7 @@ do
         end
     end
 
-    local function setFlag(text, color)
+    local function setFlag(text, solid)
         local flag = GUI.flag
         if not flag then return end
         if not text then
@@ -2976,13 +2976,18 @@ do
             GUI.flagText = nil
             return
         end
-        if GUI.flagText ~= text then
-            GUI.flagText = text
-            flag.Text = text
-            flag.TextColor3 = color
-            flag.BackgroundColor3 = color
-            flag.Visible = true
-            flash(flag, "BackgroundTransparency", 0.45, 0.85)
+        if GUI.flagText == text then return end
+        GUI.flagText = text
+        flag.Text = text
+        flag.Visible = true
+        if solid then
+            flag.TextColor3 = PAL.ink
+            GUI.flagStroke.Transparency = 1
+            flash(flag, "BackgroundTransparency", 0.5, 0)
+        else
+            flag.TextColor3 = PAL.accent
+            GUI.flagStroke.Transparency = 0.6
+            flash(flag, "BackgroundTransparency", 0.6, 0.9)
         end
     end
 
@@ -3021,17 +3026,17 @@ do
         GUI.rewardText.Text = rewards
 
         if not state.enabled then
-            setFlag("PAUSED", PAL.warn)
-        elseif info.isMax then
-            setFlag("MAX RANK", PAL.accent)
-        elseif state.worldSwitching then
-            setFlag("TELEPORTING", PAL.accentAlt)
+            setFlag("PAUSED", true)
         elseif state.worldMismatch then
-            setFlag("WRONG WORLD", PAL.bad)
+            setFlag("WRONG WORLD", true)
         elseif info.blockedByZone then
-            setFlag("NEEDS ZONE " .. tostring(info.zoneNumberNeeded or "?"), PAL.warn)
+            setFlag("NEEDS ZONE " .. tostring(info.zoneNumberNeeded or "?"), true)
         elseif info.blockedByRebirth then
-            setFlag("NEEDS " .. tostring(info.rebirthsNeeded or "?") .. " REBIRTHS", PAL.warn)
+            setFlag("NEEDS " .. tostring(info.rebirthsNeeded or "?") .. " REBIRTHS", true)
+        elseif info.isMax then
+            setFlag("MAX RANK", false)
+        elseif state.worldSwitching then
+            setFlag("TELEPORTING", false)
         else
             setFlag(nil)
         end
@@ -3087,20 +3092,28 @@ do
     end
 
     local function refreshStatus()
-        local color = PAL.accent
+        local mode, color, beat = "run", PAL.accent, TW.pulse
         if not state.alive then
-            color = PAL.bad
+            mode, color, beat = "stopped", PAL.dim, nil
         elseif not state.enabled then
-            color = PAL.warn
+            mode, color, beat = "paused", PAL.warn, nil
         elseif state.worldMismatch then
-            color = PAL.bad
+            mode, color, beat = "blocked", PAL.accent, TW.alert
         elseif state.worldSwitching or state.hopping then
-            color = PAL.accentAlt
+            mode, color, beat = "moving", PAL.accentAlt, TW.alert
         end
-        if GUI.shown.status ~= color then
-            GUI.shown.status = color
+        if GUI.shown.status ~= mode then
+            GUI.shown.status = mode
+            if GUI.beat then
+                pcall(function() GUI.beat:Cancel() end)
+                GUI.beat = nil
+            end
+            GUI.statusDot.BackgroundTransparency = 0
             tween(GUI.statusDot, TW.fast, { BackgroundColor3 = color })
             tween(GUI.statusStripe, TW.fast, { BackgroundColor3 = color })
+            if beat then
+                GUI.beat = tween(GUI.statusDot, beat, { BackgroundTransparency = 0.65 })
+            end
         end
         GUI.statusText.Text = tostring(state.action)
         paintSwitch(state.enabled == true)
